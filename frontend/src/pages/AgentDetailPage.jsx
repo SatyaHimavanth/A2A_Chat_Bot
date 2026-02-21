@@ -62,10 +62,11 @@ export default function AgentDetailPage({ token, username, onLogout }) {
     <main className="app-shell">
       <AppHeader
         title="Agent Details"
-        subtitle={`Signed in as ${username} | Auto-refresh status every 15s`}
+        subtitle="Auto-refresh status every 15 seconds"
         rightActionLabel="Chat"
         onRightAction={() => selectedModeId && navigate(`/agents/${selectedModeId}/chat`)}
         onLogout={onLogout}
+        username={username}
       />
       {error && <div className="error">{error}</div>}
       {detail && (

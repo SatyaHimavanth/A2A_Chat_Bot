@@ -32,10 +32,11 @@ export default function AgentsPage({ token, username, onLogout }) {
     <main className="app-shell">
       <AppHeader
         title="A2A Agent Cards"
-        subtitle={`Signed in as ${username}`}
+        subtitle="Manage your connected A2A agents"
         rightActionLabel="Create"
         onRightAction={() => setShowConnect(true)}
         onLogout={onLogout}
+        username={username}
         showAgentsNav={false}
       />
       {error && <div className="error">{error}</div>}

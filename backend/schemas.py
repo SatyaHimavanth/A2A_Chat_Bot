@@ -63,6 +63,7 @@ class SessionSummary(BaseModel):
     id: int
     context_id: str
     title: str
+    chat_status: int = 1
     created_at: datetime
     updated_at: datetime
 
@@ -76,3 +77,7 @@ class MessageSummary(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str
+
+
+class SessionRenameRequest(BaseModel):
+    title: str

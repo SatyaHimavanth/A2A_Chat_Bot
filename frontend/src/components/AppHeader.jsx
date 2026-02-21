@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 export default function AppHeader({
@@ -6,9 +7,12 @@ export default function AppHeader({
   rightActionLabel,
   onRightAction,
   onLogout,
+  username,
   showAgentsNav = true,
 }) {
   const navigate = useNavigate()
+  const [open, setOpen] = useState(false)
+  const initial = (username || '?').charAt(0).toUpperCase()
 
   return (
     <header className="topbar">
@@ -25,9 +29,24 @@ export default function AppHeader({
             Agents
           </button>
         )}
-        <button className="ghost" onClick={onLogout}>
-          Logout
-        </button>
+        <div className="profile-wrap">
+          <button
+            className="profile-avatar"
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            aria-label="Profile menu"
+          >
+            {initial}
+          </button>
+          {open && (
+            <div className="profile-menu">
+              <p className="profile-name">{username}</p>
+              <button className="ghost" type="button" onClick={onLogout}>
+                Logout
+              </button>
+            </div>
+          )}
+        </div>
       </div>
     </header>
   )

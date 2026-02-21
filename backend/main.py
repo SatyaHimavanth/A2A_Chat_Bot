@@ -31,6 +31,7 @@ from schemas import (
     LoginResponse,
     MessageSummary,
     RegisterRequest,
+    SessionRenameRequest,
     SessionCreateRequest,
     SessionSummary,
 )
@@ -99,9 +100,25 @@ def _serialize_session(session: ChatSession) -> SessionSummary:
         id=session.id,
         context_id=session.context_id,
         title=session.title,
+        chat_status=session.chat_status if session.chat_status is not None else 1,
         created_at=session.created_at,
         updated_at=session.updated_at,
     )
+
+
+def _extract_text_from_task_event(task, update) -> str:
+    if task and getattr(task, 'artifacts', None):
+        return get_message_text(task.artifacts[-1])
+
+    status_update = getattr(update, 'status', None)
+    if status_update and getattr(status_update, 'message', None):
+        return get_message_text(status_update.message)
+
+    task_status = getattr(task, 'status', None)
+    if task_status and getattr(task_status, 'message', None):
+        return get_message_text(task_status.message)
+
+    return ''
 
 
 def _auth_context(auth_token: str | None) -> ClientCallContext | None:
@@ -231,6 +248,15 @@ def startup():
         db.execute(
             text(
                 "ALTER TABLE agent_connections ADD COLUMN status VARCHAR(30) NOT NULL DEFAULT 'connected'"
+            )
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+    try:
+        db.execute(
+            text(
+                "ALTER TABLE chat_sessions ADD COLUMN chat_status INTEGER NOT NULL DEFAULT 1"
             )
         )
         db.commit()
@@ -392,8 +418,9 @@ def list_sessions(
         .where(
             ChatSession.user_id == user.id,
             ChatSession.agent_connection_id == agent_id,
+            ChatSession.chat_status != 0,
         )
-        .order_by(ChatSession.updated_at.desc())
+        .order_by(ChatSession.chat_status.asc(), ChatSession.updated_at.desc())
     ).all()
     return [_serialize_session(s) for s in sessions]
 
@@ -421,6 +448,7 @@ async def create_session(
         agent_connection_id=agent_id,
         context_id=str(uuid4()),
         title=title,
+        chat_status=1,
     )
     db.add(session)
     db.commit()
@@ -436,6 +464,8 @@ def get_messages(
 ):
     session = db.get(ChatSession, session_id)
     if not session or session.user_id != user.id:
+        raise HTTPException(status_code=404, detail='Session not found.')
+    if session.chat_status == 0:
         raise HTTPException(status_code=404, detail='Session not found.')
     msgs = db.scalars(
         select(ChatMessage)
@@ -463,6 +493,8 @@ async def stream_chat(
     session = db.get(ChatSession, session_id)
     if not session or session.user_id != user.id:
         raise HTTPException(status_code=404, detail='Session not found.')
+    if session.chat_status == 0:
+        raise HTTPException(status_code=404, detail='Session not found.')
 
     agent = db.get(AgentConnection, session.agent_connection_id)
     if not agent:
@@ -480,9 +512,11 @@ async def stream_chat(
         content=payload.message,
     )
     db.add(user_message)
-    session.updated_at = datetime.utcnow()
+    session.updated_at = datetime.now(timezone.utc)
     if session.title == 'New chat':
         session.title = payload.message[:60]
+    if session.chat_status == -1:
+        session.chat_status = 1
     db.commit()
 
     card = AgentCard.model_validate(agent.card_payload)
@@ -510,11 +544,9 @@ async def stream_chat(
             )
             yield f"data: {json.dumps({'type': 'start'})}\n\n"
             async for response in a2a_client.send_message(request, context=call_context):
-                text = ''
                 if isinstance(response, tuple):
-                    task, _ = response
-                    if task.artifacts:
-                        text = get_message_text(task.artifacts[-1])
+                    task, update = response
+                    text = _extract_text_from_task_event(task, update)
                 else:
                     text = get_message_text(response)
                 if text:
@@ -535,7 +567,7 @@ async def stream_chat(
                                 content=assistant_text,
                             )
                         )
-                        db_session.updated_at = datetime.utcnow()
+                        db_session.updated_at = datetime.now(timezone.utc)
                         db2.commit()
                 finally:
                     db2.close()
@@ -556,6 +588,74 @@ async def stream_chat(
             await httpx_client.aclose()
 
     return StreamingResponse(event_stream(), media_type='text/event-stream')
+
+
+@app.patch('/api/sessions/{session_id}/rename', response_model=SessionSummary)
+def rename_session(
+    session_id: int,
+    payload: SessionRenameRequest,
+    user: User = Depends(_require_user),
+    db: Session = Depends(get_db),
+):
+    session = db.get(ChatSession, session_id)
+    if not session or session.user_id != user.id or session.chat_status == 0:
+        raise HTTPException(status_code=404, detail='Session not found.')
+    title = payload.title.strip()
+    if not title:
+        raise HTTPException(status_code=400, detail='Title cannot be empty.')
+    session.title = title[:255]
+    session.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(session)
+    return _serialize_session(session)
+
+
+@app.post('/api/sessions/{session_id}/archive', response_model=SessionSummary)
+def archive_session(
+    session_id: int,
+    user: User = Depends(_require_user),
+    db: Session = Depends(get_db),
+):
+    session = db.get(ChatSession, session_id)
+    if not session or session.user_id != user.id or session.chat_status == 0:
+        raise HTTPException(status_code=404, detail='Session not found.')
+    session.chat_status = -1
+    session.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(session)
+    return _serialize_session(session)
+
+
+@app.post('/api/sessions/{session_id}/unarchive', response_model=SessionSummary)
+def unarchive_session(
+    session_id: int,
+    user: User = Depends(_require_user),
+    db: Session = Depends(get_db),
+):
+    session = db.get(ChatSession, session_id)
+    if not session or session.user_id != user.id or session.chat_status == 0:
+        raise HTTPException(status_code=404, detail='Session not found.')
+    session.chat_status = 1
+    session.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(session)
+    return _serialize_session(session)
+
+
+@app.post('/api/sessions/{session_id}/delete', response_model=SessionSummary)
+def delete_session(
+    session_id: int,
+    user: User = Depends(_require_user),
+    db: Session = Depends(get_db),
+):
+    session = db.get(ChatSession, session_id)
+    if not session or session.user_id != user.id:
+        raise HTTPException(status_code=404, detail='Session not found.')
+    session.chat_status = 0
+    session.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(session)
+    return _serialize_session(session)
 
 
 

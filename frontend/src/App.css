@@ -29,6 +29,42 @@
 .topbar-actions {
   display: flex;
   gap: 0.6rem;
+  align-items: center;
+}
+
+.profile-wrap {
+  position: relative;
+}
+
+.profile-avatar {
+  width: 38px;
+  height: 38px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  background: #1f7a8c;
+  color: #fff;
+  font-weight: 700;
+  padding: 0;
+}
+
+.profile-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  min-width: 170px;
+  border: 1px solid #d9e2ec;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 10px 24px rgba(16, 42, 67, 0.12);
+  padding: 0.55rem;
+  z-index: 10;
+}
+
+.profile-name {
+  margin: 0 0 0.45rem;
+  color: #334e68;
+  font-weight: 600;
 }
 
 .layout {
@@ -180,7 +216,7 @@
   border: 1px solid #bcccdc;
   border-radius: 10px;
   background: #fff;
-  padding: 0.6rem;
+  padding: 0.5rem;
   color: #102a43;
 }
 
@@ -197,6 +233,33 @@
   display: block;
   color: #627d98;
   overflow-wrap: anywhere;
+}
+
+.session-main {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  color: inherit;
+  padding: 0.25rem;
+}
+
+.session-main:hover {
+  border-color: transparent;
+}
+
+.session-actions {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  margin-top: 0.35rem;
+}
+
+.session-group-title {
+  margin: 0.45rem 0 0.1rem;
+  font-size: 0.78rem;
+  color: #627d98;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .messages {
@@ -309,6 +372,17 @@ button.active {
 button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+button.tiny {
+  padding: 0.35rem 0.5rem;
+  font-size: 0.75rem;
+}
+
+button.danger {
+  color: #9f1239;
+  border: 1px solid #f7b6c2;
+  background: #fff3f5;
 }
 
 .error {

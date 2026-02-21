@@ -15,6 +15,9 @@ export default function ChatPage({ token, username, onLogout }) {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState('')
 
+  const activeSessions = sessions.filter((s) => (s.chat_status ?? 1) === 1)
+  const archivedSessions = sessions.filter((s) => (s.chat_status ?? 1) === -1)
+
   async function loadSessions() {
     setError('')
     try {
@@ -79,6 +82,23 @@ export default function ChatPage({ token, username, onLogout }) {
   }, [agentId, token])
 
   async function createSession() {
+    const topActiveSession = activeSessions[0]
+    if (topActiveSession) {
+      try {
+        const topMessages = await apiRequest(`/api/sessions/${topActiveSession.id}/messages`, {
+          token,
+          onUnauthorized: onLogout,
+        })
+        if (topMessages.length === 0) {
+          setSelectedSession(topActiveSession)
+          setMessages(topMessages)
+          return topActiveSession
+        }
+      } catch (err) {
+        setError(err.message)
+      }
+    }
+
     const statusNow = await refreshStatus()
     if (statusNow !== 'connected') {
       throw new Error('Agent cannot be connected right now.')
@@ -103,6 +123,75 @@ export default function ChatPage({ token, username, onLogout }) {
         onUnauthorized: onLogout,
       })
       setMessages(data)
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  async function renameSession(session) {
+    const nextTitle = window.prompt('Rename chat', session.title || '')
+    if (!nextTitle || !nextTitle.trim()) {
+      return
+    }
+    try {
+      await apiRequest(`/api/sessions/${session.id}/rename`, {
+        method: 'PATCH',
+        token,
+        body: { title: nextTitle.trim() },
+        onUnauthorized: onLogout,
+      })
+      await loadSessions()
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  async function archiveSession(session) {
+    try {
+      await apiRequest(`/api/sessions/${session.id}/archive`, {
+        method: 'POST',
+        token,
+        onUnauthorized: onLogout,
+      })
+      if (selectedSession?.id === session.id) {
+        setSelectedSession(null)
+        setMessages([])
+      }
+      await loadSessions()
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  async function unarchiveSession(session) {
+    try {
+      await apiRequest(`/api/sessions/${session.id}/unarchive`, {
+        method: 'POST',
+        token,
+        onUnauthorized: onLogout,
+      })
+      await loadSessions()
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  async function deleteSession(session) {
+    const ok = window.confirm('Delete this chat?')
+    if (!ok) {
+      return
+    }
+    try {
+      await apiRequest(`/api/sessions/${session.id}/delete`, {
+        method: 'POST',
+        token,
+        onUnauthorized: onLogout,
+      })
+      if (selectedSession?.id === session.id) {
+        setSelectedSession(null)
+        setMessages([])
+      }
+      await loadSessions()
     } catch (err) {
       setError(err.message)
     }
@@ -216,8 +305,9 @@ export default function ChatPage({ token, username, onLogout }) {
     <main className="app-shell">
       <AppHeader
         title="Agent Chat"
-        subtitle={`${agentDetail?.card_name || 'Agent'} | Signed in as ${username}`}
+        subtitle={agentDetail?.card_name || 'Agent'}
         onLogout={onLogout}
+        username={username}
       />
       {error && <div className="error">{error}</div>}
       <section className="chat-page-layout">
@@ -229,15 +319,49 @@ export default function ChatPage({ token, username, onLogout }) {
             </button>
           </div>
           <div className="session-list">
-            {sessions.map((session) => (
-              <button
+            {!!activeSessions.length && <p className="session-group-title">Active</p>}
+            {activeSessions.map((session) => (
+              <div
                 key={session.id}
                 className={selectedSession?.id === session.id ? 'session active' : 'session'}
-                onClick={() => selectSession(session)}
               >
-                <strong>{session.title || 'Untitled'}</strong>
-                <small>{session.context_id}</small>
-              </button>
+                <button className="session-main" onClick={() => selectSession(session)}>
+                  <strong>{session.title || 'Untitled'}</strong>
+                  <small>{session.context_id}</small>
+                </button>
+                <div className="session-actions">
+                  <button className="ghost tiny" onClick={() => renameSession(session)}>
+                    Rename
+                  </button>
+                  <button className="ghost tiny" onClick={() => archiveSession(session)}>
+                    Archive
+                  </button>
+                  <button className="ghost tiny danger" onClick={() => deleteSession(session)}>
+                    Delete
+                  </button>
+                </div>
+              </div>
+            ))}
+
+            {!!archivedSessions.length && <p className="session-group-title">Archived</p>}
+            {archivedSessions.map((session) => (
+              <div
+                key={session.id}
+                className={selectedSession?.id === session.id ? 'session active' : 'session'}
+              >
+                <button className="session-main" onClick={() => selectSession(session)}>
+                  <strong>{session.title || 'Untitled'}</strong>
+                  <small>{session.context_id}</small>
+                </button>
+                <div className="session-actions">
+                  <button className="ghost tiny" onClick={() => unarchiveSession(session)}>
+                    Restore
+                  </button>
+                  <button className="ghost tiny danger" onClick={() => deleteSession(session)}>
+                    Delete
+                  </button>
+                </div>
+              </div>
             ))}
             {!sessions.length && <p>No sessions yet.</p>}
           </div>
