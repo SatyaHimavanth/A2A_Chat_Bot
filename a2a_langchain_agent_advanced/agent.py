@@ -78,35 +78,42 @@ class CalculatorAgent:
             logger.info(f"chunk: {chunk}")
 
             for step, data in chunk.items():
-                if structured_response:= data.get('structured_response'):
+                if structured_response := data.get('structured_response'):
                     yield self.get_agent_response(structured_response)
-                else:
-                    message = data['messages'][-1]
+                    continue
 
-                    if isinstance(message, AIMessage):
-                        if message.tool_calls and len(message.tool_calls)>0:
-                            for tool in message.tool_calls:
-                                tool_name = tool["name"]
-                                tool_args = str(tool["args"])
-                                yield {
-                                    'is_task_complete': False,
-                                    'require_user_input': False,
-                                    'content': f'Invoking {tool_name} tool with arguments {tool_args}',
-                                }
-                        else:
+                message = data['messages'][-1]
+
+                if isinstance(message, AIMessage):
+                    if message.tool_calls and len(message.tool_calls) > 0:
+                        for tool in message.tool_calls:
+                            tool_name = tool["name"]
+                            tool_args = str(tool["args"])
                             yield {
-                                'is_task_complete': True,
-                                'require_user_input': True,
-                                'content': message.content,
+                                'status': 'working',
+                                'is_task_complete': False,
+                                'require_user_input': False,
+                                'content': f'Invoking {tool_name} tool with arguments {tool_args}',
                             }
-                    elif isinstance(message, ToolMessage):
-                        tool_name = message.name
-                        tool_response = message.content
+                    else:
+                        # No structured terminal payload from the model; treat as
+                        # regular completion if content exists, else ask for input.
+                        has_content = bool(str(message.content).strip())
                         yield {
-                            'is_task_complete': False,
-                            'require_user_input': False,
-                            'content': f'Response from {tool_name} tool is {tool_response}',
+                            'status': 'completed' if has_content else 'input_required',
+                            'is_task_complete': has_content,
+                            'require_user_input': not has_content,
+                            'content': message.content or 'Please provide more details.',
                         }
+                elif isinstance(message, ToolMessage):
+                    tool_name = message.name
+                    tool_response = message.content
+                    yield {
+                        'status': 'working',
+                        'is_task_complete': False,
+                        'require_user_input': False,
+                        'content': f'Response from {tool_name} tool is {tool_response}',
+                    }
 
 
     def get_agent_response(self, structured_response):
@@ -117,26 +124,30 @@ class CalculatorAgent:
         ):
             if structured_response.status == 'input_required':
                 return {
+                    'status': 'input_required',
                     'is_task_complete': False,
                     'require_user_input': True,
                     'content': structured_response.message,
                 }
             if structured_response.status == 'error':
                 return {
+                    'status': 'error',
                     'is_task_complete': False,
-                    'require_user_input': True,
+                    'require_user_input': False,
                     'content': structured_response.message,
                 }
             if structured_response.status == 'completed':
                 return {
+                    'status': 'completed',
                     'is_task_complete': True,
                     'require_user_input': False,
                     'content': structured_response.message,
                 }
 
         return {
+            'status': 'error',
             'is_task_complete': False,
-            'require_user_input': True,
+            'require_user_input': False,
             'content': (
                 'We are unable to process your request at the moment. '
                 'Please try again.'

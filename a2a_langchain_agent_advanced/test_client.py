@@ -18,6 +18,21 @@ def get_user_query() -> str:
     return input('\n> ')
 
 
+def _extract_text_from_task_event(task, update) -> str:
+    if task and getattr(task, 'artifacts', None):
+        return get_message_text(task.artifacts[-1])
+
+    status_update = getattr(update, 'status', None)
+    if status_update and getattr(status_update, 'message', None):
+        return get_message_text(status_update.message)
+
+    task_status = getattr(task, 'status', None)
+    if task_status and getattr(task_status, 'message', None):
+        return get_message_text(task_status.message)
+
+    return ''
+
+
 async def interact_with_server(
     client: Client, call_context: ClientCallContext | None
 ) -> None:
@@ -45,15 +60,16 @@ async def interact_with_server(
                 request,
                 context=call_context,
             ):
-                if not isinstance(response, tuple):
-                    continue
-                task, _ = response
-                if not task.artifacts:
-                    continue
-                artifact_text = get_message_text(task.artifacts[-1])
-                if artifact_text and artifact_text != last_artifact_text:
-                    print(artifact_text)
-                    last_artifact_text = artifact_text
+                text = ''
+                if isinstance(response, tuple):
+                    task, update = response
+                    text = _extract_text_from_task_event(task, update)
+                else:
+                    text = get_message_text(response)
+
+                if text and text != last_artifact_text:
+                    print(text)
+                    last_artifact_text = text
         except Exception as e:
             print(f'An error occurred: {e}')
 

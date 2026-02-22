@@ -4,7 +4,6 @@ from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
 from a2a.server.tasks import TaskUpdater
 from a2a.types import (
-    InternalError,
     InvalidParamsError,
     Part,
     TaskState,
@@ -63,8 +62,10 @@ class CalculatorAgentExecutor(AgentExecutor):
             await event_queue.enqueue_event(task)
         updater = TaskUpdater(event_queue, task.id, task.context_id)
         try:
+            terminal_emitted = False
             async for item in agent.stream(query, task.context_id):
                 logging.info(f'Agent response in a2a-protocol: {item}')
+                response_status = item.get('status', '')
                 is_task_complete = item['is_task_complete']
                 require_user_input = item['require_user_input']
 
@@ -77,6 +78,18 @@ class CalculatorAgentExecutor(AgentExecutor):
                             task.id,
                         ),
                     )
+                elif response_status == 'error':
+                    await updater.update_status(
+                        TaskState.failed,
+                        new_agent_text_message(
+                            item['content'],
+                            task.context_id,
+                            task.id,
+                        ),
+                        final=True,
+                    )
+                    terminal_emitted = True
+                    break
                 elif require_user_input:
                     await updater.update_status(
                         TaskState.input_required,
@@ -87,6 +100,7 @@ class CalculatorAgentExecutor(AgentExecutor):
                         ),
                         final=True,
                     )
+                    terminal_emitted = True
                     break
                 else:
                     await updater.add_artifact(
@@ -94,11 +108,31 @@ class CalculatorAgentExecutor(AgentExecutor):
                         name='conversion_result',
                     )
                     await updater.complete()
+                    terminal_emitted = True
                     break
+
+            if not terminal_emitted:
+                await updater.update_status(
+                    TaskState.failed,
+                    new_agent_text_message(
+                        'The request did not produce a terminal response.',
+                        task.context_id,
+                        task.id,
+                    ),
+                    final=True,
+                )
 
         except Exception as e:
             logger.error(f'An error occurred while streaming the response: {e}')
-            raise ServerError(error=InternalError()) from e
+            await updater.update_status(
+                TaskState.failed,
+                new_agent_text_message(
+                    'An internal error occurred while processing your request.',
+                    task.context_id,
+                    task.id,
+                ),
+                final=True,
+            )
 
     def _validate_request(self, context: RequestContext) -> bool:
         return False
