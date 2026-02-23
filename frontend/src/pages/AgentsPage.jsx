@@ -9,18 +9,28 @@ export default function AgentsPage({ token, username, onLogout, theme, toggleThe
   const [agents, setAgents] = useState([])
   const [showConnect, setShowConnect] = useState(false)
   const [error, setError] = useState('')
+  const [isLoading, setIsLoading] = useState(true)
   const navigate = useNavigate()
 
   async function loadAgents() {
+    setIsLoading(true)
     setError('')
     try {
-      const data = await apiRequest('/api/agents', {
-        token,
-        onUnauthorized: onLogout,
-      })
+      const data = await Promise.race([
+        apiRequest('/api/agents', {
+          token,
+          onUnauthorized: onLogout,
+        }),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Loading agents timed out. Please try again.')), 15000),
+        ),
+      ])
       setAgents(data)
     } catch (err) {
+      setAgents([])
       setError(err.message)
+    } finally {
+      setIsLoading(false)
     }
   }
 
@@ -42,10 +52,40 @@ export default function AgentsPage({ token, username, onLogout, theme, toggleThe
           theme={theme}
           toggleTheme={toggleTheme}
         />
-        {error && <div className="bg-red-100 dark:bg-red-900/30 border border-red-400 dark:border-red-800 text-red-700 dark:text-red-400 px-4 py-3 rounded-xl mb-6">{error}</div>}
+        {error && (
+          <div className="bg-red-100 dark:bg-red-900/30 border border-red-400 dark:border-red-800 text-red-700 dark:text-red-400 px-4 py-3 rounded-xl mb-6 flex items-center justify-between gap-4">
+            <span>{error || 'Error loading agents.'}</span>
+            <button className="btn-ghost py-1.5 px-3 text-xs" onClick={loadAgents}>
+              Retry
+            </button>
+          </div>
+        )}
         <section className="mt-8 animate-slide-up">
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {agents.map((agent) => (
+            {isLoading &&
+              Array.from({ length: 6 }).map((_, idx) => (
+                <article
+                  key={`agent-skeleton-${idx}`}
+                  className="glass-panel p-5 animate-pulse"
+                >
+                  <div className="flex items-start justify-between mb-4">
+                    <div className="h-5 w-2/3 rounded bg-slate-200 dark:bg-slate-700" />
+                    <div className="h-5 w-16 rounded-full bg-slate-200 dark:bg-slate-700" />
+                  </div>
+                  <div className="space-y-2 mb-4">
+                    <div className="h-4 w-full rounded bg-slate-200 dark:bg-slate-700" />
+                    <div className="h-4 w-5/6 rounded bg-slate-200 dark:bg-slate-700" />
+                  </div>
+                  <div className="h-7 w-full rounded-md bg-slate-200 dark:bg-slate-700 mb-4" />
+                  <div className="pt-4 border-t border-cardBorder flex items-center justify-between">
+                    <div className="h-4 w-20 rounded bg-slate-200 dark:bg-slate-700" />
+                    <div className="h-8 w-24 rounded-lg bg-slate-200 dark:bg-slate-700" />
+                  </div>
+                </article>
+              ))}
+
+            {!isLoading &&
+              agents.map((agent) => (
               <article key={agent.id} className="glass-panel p-5 flex flex-col transition-transform duration-300 hover:-translate-y-1 hover:shadow-2xl hover:border-primary/50 group">
                 <header className="flex items-start justify-between mb-3">
                   <h3 className="m-0 text-lg font-bold text-slate-800 dark:text-slate-100 group-hover:text-primary transition-colors">{agent.card_name}</h3>
@@ -61,9 +101,9 @@ export default function AgentsPage({ token, username, onLogout, theme, toggleThe
                 </footer>
               </article>
             ))}
-            {!agents.length && (
+            {!isLoading && !error && !agents.length && (
               <div className="col-span-full py-16 text-center border-2 border-dashed border-cardBorder rounded-2xl bg-card/30">
-                <p className="text-lg text-slate-500 dark:text-slate-400 font-medium">No agents connected yet. Start by creating one.</p>
+                <p className="text-lg text-slate-500 dark:text-slate-400 font-medium">No agents found. Start by creating one.</p>
               </div>
             )}
           </div>

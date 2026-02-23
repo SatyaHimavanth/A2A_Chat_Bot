@@ -1,5 +1,6 @@
 import json
 import os
+from urllib.parse import urlparse
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
@@ -129,12 +130,24 @@ def _auth_context(auth_token: str | None) -> ClientCallContext | None:
     )
 
 
+def _normalize_card_url(card: AgentCard, base_url: str) -> AgentCard:
+    raw_url = (card.url or '').strip()
+    if not raw_url:
+        return card.model_copy(update={'url': f'{base_url}/'})
+
+    parsed = urlparse(raw_url)
+    hostname = (parsed.hostname or '').lower()
+    if hostname in {'0.0.0.0', '127.0.0.1', 'localhost'}:
+        return card.model_copy(update={'url': f'{base_url}/'})
+    return card
+
+
 async def _resolve_agent_card(req: AgentConnectRequest) -> AgentCard:
     base_url = req.base_url.rstrip('/')
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=60.0)) as client:
             resolver = A2ACardResolver(httpx_client=client, base_url=base_url)
-            public_card = await resolver.get_agent_card()
+            public_card = _normalize_card_url(await resolver.get_agent_card(), base_url)
 
             if req.mode == AgentMode.public.value:
                 return public_card
@@ -163,7 +176,10 @@ async def _resolve_agent_card(req: AgentConnectRequest) -> AgentCard:
             a2a_client = ClientFactory(cfg).create(public_card)
             call_context = _auth_context(req.auth_token)
             try:
-                extended_card = await a2a_client.get_card(context=call_context)
+                extended_card = _normalize_card_url(
+                    await a2a_client.get_card(context=call_context),
+                    base_url,
+                )
             finally:
                 await a2a_client.close()
 
@@ -177,11 +193,34 @@ async def _resolve_agent_card(req: AgentConnectRequest) -> AgentCard:
             return extended_card
     except HTTPException:
         raise
-    except Exception:
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f'Agent endpoint returned HTTP {exc.response.status_code}. '
+                'Verify the base URL is publicly accessible and serves '
+                '`/.well-known/agent-card.json` without browser login.'
+            ),
+        ) from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f'Network error while connecting to agent: {exc}.',
+        ) from exc
+    except Exception as exc:
+        if 'Failed to parse JSON for agent card' in str(exc):
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    'Agent card endpoint did not return JSON. '
+                    'This usually means the URL points to a web/login page. '
+                    'Use the direct public A2A service base URL.'
+                ),
+            ) from exc
         raise HTTPException(
             status_code=503,
             detail='Agent cannot be connected right now.',
-        )
+        ) from exc
 
 
 async def _check_agent_connection(agent: AgentConnection) -> bool:

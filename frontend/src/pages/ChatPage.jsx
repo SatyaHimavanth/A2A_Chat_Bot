@@ -2,6 +2,7 @@ import { useEffect, useState, useRef } from 'react'
 import { useParams } from 'react-router-dom'
 
 import AppHeader from '../components/AppHeader'
+import FlashMessages from '../components/FlashMessages'
 import { apiRequest, createSseUrl } from '../lib/api'
 
 export default function ChatPage({ token, username, onLogout, theme, toggleTheme }) {
@@ -14,6 +15,7 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
   const [chatInput, setChatInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState('')
+  const [flashMessages, setFlashMessages] = useState([])
 
   const [sessionToRename, setSessionToRename] = useState(null)
   const [renameInputValue, setRenameInputValue] = useState('')
@@ -27,6 +29,23 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }
+
+  function showFlash(text, type = 'error') {
+    const id = `${Date.now()}-${Math.random()}`
+    setFlashMessages((prev) => [...prev, { id, text, type }])
+    setTimeout(() => {
+      setFlashMessages((prev) => prev.filter((item) => item.id !== id))
+    }, 5000)
+  }
+
+  function dismissFlash(id) {
+    setFlashMessages((prev) => prev.filter((item) => item.id !== id))
+  }
+
+  function reportError(message) {
+    setError(message)
+    showFlash(message, 'error')
   }
 
   useEffect(() => {
@@ -45,7 +64,7 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
         await selectSession(data[0])
       }
     } catch (err) {
-      setError(err.message)
+      reportError(err.message)
     }
   }
 
@@ -60,7 +79,7 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
       const selectedMode = data.modes?.find((m) => m.id === Number(agentId))
       setAgentStatus(selectedMode?.status || 'connected')
     } catch (err) {
-      setError(err.message)
+      reportError(err.message)
     }
   }
 
@@ -77,7 +96,7 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
       await loadAgentDetail()
       return nextStatus
     } catch (err) {
-      setError(err.message)
+      reportError(err.message)
       return 'disconnected'
     }
   }
@@ -112,7 +131,7 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
           return topActiveSession
         }
       } catch (err) {
-        setError(err.message)
+        reportError(err.message)
       }
     }
 
@@ -141,7 +160,7 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
       })
       setMessages(data)
     } catch (err) {
-      setError(err.message)
+      reportError(err.message)
     }
   }
 
@@ -169,7 +188,7 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
       })
       await loadSessions()
     } catch (err) {
-      setError(err.message)
+      reportError(err.message)
     } finally {
       setSessionToRename(null)
       setRenameInputValue('')
@@ -198,7 +217,7 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
       }
       await loadSessions()
     } catch (err) {
-      setError(err.message)
+      reportError(err.message)
     }
   }
 
@@ -215,7 +234,7 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
       })
       await loadSessions()
     } catch (err) {
-      setError(err.message)
+      reportError(err.message)
     }
   }
 
@@ -241,7 +260,7 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
       }
       await loadSessions()
     } catch (err) {
-      setError(err.message)
+      reportError(err.message)
     } finally {
       setSessionToDelete(null)
     }
@@ -261,7 +280,7 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
     setError('')
     const statusNow = await refreshStatus()
     if (statusNow !== 'connected') {
-      setError('Agent cannot be connected right now.')
+      reportError('Agent cannot be connected right now.')
       setIsLoading(false)
       return
     }
@@ -274,7 +293,7 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
         session = await createSession()
       }
     } catch (err) {
-      setError(err.message)
+      reportError(err.message)
       setIsLoading(false)
       return
     }
@@ -318,6 +337,7 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
       }
       const decoder = new TextDecoder('utf-8')
       let buffer = ''
+      let receivedAssistantSnapshot = false
       while (true) {
         const { value, done } = await reader.read()
         if (done) break
@@ -332,6 +352,7 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
           if (!line) continue
           const payload = JSON.parse(line.slice(6))
           if (payload.type === 'assistant_snapshot') {
+            receivedAssistantSnapshot = true
             setMessages((prev) =>
               prev.map((msg) =>
                 msg.streaming ? { ...msg, content: payload.text } : msg,
@@ -339,7 +360,7 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
             )
           }
           if (payload.type === 'error') {
-            setError(payload.message)
+            reportError(payload.message || 'Agent stream failed.')
           }
         }
       }
@@ -347,9 +368,12 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
       setMessages((prev) =>
         prev.map((msg) => (msg.streaming ? { ...msg, streaming: false } : msg)),
       )
+      if (!receivedAssistantSnapshot) {
+        reportError('No response received from agent. Please try again.')
+      }
       await loadSessions()
     } catch (err) {
-      setError(err.message)
+      reportError(err.message)
     } finally {
       setIsLoading(false)
     }
@@ -357,6 +381,7 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
 
   return (
     <main className="ambient-bg flex flex-col h-screen overflow-hidden text-foreground">
+      <FlashMessages messages={flashMessages} onDismiss={dismissFlash} />
       <div className="px-4 md:px-6 lg:px-8 shrink-0">
         <AppHeader
           title="Workspace"
