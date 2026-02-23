@@ -2,6 +2,7 @@ import json
 import os
 import asyncio
 from urllib.parse import urlparse
+from contextlib import asynccontextmanager
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
@@ -13,9 +14,12 @@ from a2a.client.middleware import ClientCallContext
 from a2a.types import AgentCard, Message, Part, Role, TextPart, TransportProtocol
 from a2a.utils.message import get_message_text
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Header, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Security, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials
+from fastapi.security import HTTPBearer
+from jose import JWTError, ExpiredSignatureError, jwt
 from sqlalchemy import select
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -32,6 +36,8 @@ from schemas import (
     LoginRequest,
     LoginResponse,
     MessageSummary,
+    RefreshRequest,
+    RefreshResponse,
     RegisterRequest,
     SessionRenameRequest,
     SessionCreateRequest,
@@ -41,7 +47,51 @@ from schemas import (
 
 load_dotenv()
 
-app = FastAPI(title='A2A Agent Chat Backend', version='1.0.0')
+bearer_scheme = HTTPBearer(auto_error=False)
+
+
+def _run_startup() -> None:
+    Base.metadata.create_all(bind=engine)
+    db = next(get_db())
+    try:
+        # Lightweight migration for existing DBs.
+        db.execute(
+            text(
+                "ALTER TABLE agent_connections ADD COLUMN status VARCHAR(30) NOT NULL DEFAULT 'connected'"
+            )
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+    try:
+        db.execute(
+            text(
+                "ALTER TABLE chat_sessions ADD COLUMN chat_status INTEGER NOT NULL DEFAULT 1"
+            )
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+    try:
+        existing = db.scalar(select(User).where(User.username == 'admin'))
+        if not existing:
+            db.add(User(username='admin', password='admin'))
+            db.commit()
+    finally:
+        db.close()
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    _run_startup()
+    yield
+
+
+app = FastAPI(
+    title='A2A Agent Chat Backend',
+    version='1.0.0',
+    lifespan=lifespan,
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -51,11 +101,13 @@ app.add_middleware(
     allow_headers=['*'],
 )
 
-SESSION_TTL_MINUTES = int(os.getenv('SESSION_TTL_MINUTES', '120'))
 AGENT_STATUS_CHECK_TIMEOUT_SECONDS = float(
     os.getenv('AGENT_STATUS_CHECK_TIMEOUT_SECONDS', '12')
 )
-SESSION_TOKENS: dict[str, tuple[int, datetime]] = {}
+SECRET_KEY = os.getenv('SECRET_KEY', 'change-me-in-production')
+JWT_ALGORITHM = os.getenv('JWT_ALGORITHM', 'HS256')
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv('ACCESS_TOKEN_EXPIRE_MINUTES', '120'))
+REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv('REFRESH_TOKEN_EXPIRE_DAYS', '30'))
 
 
 def _serialize_agent(agent: AgentConnection) -> AgentSummary:
@@ -131,6 +183,64 @@ def _auth_context(auth_token: str | None) -> ClientCallContext | None:
         return None
     return ClientCallContext(
         state={'http_kwargs': {'headers': {'Authorization': f'Bearer {auth_token}'}}}
+    )
+
+
+def create_auth_token(user_id: int, token_type: str = 'access') -> tuple[str, datetime]:
+    now = datetime.now(timezone.utc)
+    if token_type == 'refresh':
+        expires_at = now + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    else:
+        expires_at = now + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    payload = {
+        'user_id': user_id,
+        'token_type': token_type,
+        'iat': now,
+        'exp': expires_at,
+    }
+    return jwt.encode(payload, SECRET_KEY, algorithm=JWT_ALGORITHM), expires_at
+
+
+def verify_auth_token(token: str, expected_type: str = 'access') -> dict:
+    try:
+        payload = jwt.decode(
+            token,
+            SECRET_KEY,
+            algorithms=[JWT_ALGORITHM],
+            options={'verify_exp': True},
+        )
+    except ExpiredSignatureError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='Session expired. Please login again.',
+        ) from exc
+    except JWTError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f'Invalid auth token: {str(exc)}',
+        ) from exc
+
+    token_type = payload.get('token_type')
+    if token_type != expected_type:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f'Invalid token type. Expected {expected_type}.',
+        )
+    return payload
+
+
+def _build_login_response(user: User) -> LoginResponse:
+    access_token, access_expires_at = create_auth_token(user.id, token_type='access')
+    refresh_token, refresh_expires_at = create_auth_token(
+        user.id,
+        token_type='refresh',
+    )
+    return LoginResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        username=user.username,
+        access_expires_at=access_expires_at,
+        refresh_expires_at=refresh_expires_at,
     )
 
 
@@ -275,27 +385,21 @@ async def _sync_agents_status(rows: list[AgentConnection], db: Session) -> None:
 
 
 def _require_user(
-    authorization: str | None = Header(default=None),
+    credentials: HTTPAuthorizationCredentials | None = Security(bearer_scheme),
     db: Session = Depends(get_db),
 ) -> User:
-    if not authorization or not authorization.lower().startswith('bearer '):
+    if not credentials or credentials.scheme.lower() != 'bearer':
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail='Missing bearer token.',
         )
-    token = authorization.split(' ', 1)[1].strip()
-    token_data = SESSION_TOKENS.get(token)
-    if not token_data:
+    token = credentials.credentials.strip()
+    payload = verify_auth_token(token, expected_type='access')
+    user_id = payload.get('user_id')
+    if not isinstance(user_id, int):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail='Invalid or expired token.',
-        )
-    user_id, expires_at = token_data
-    if datetime.now(timezone.utc) >= expires_at:
-        SESSION_TOKENS.pop(token, None)
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail='Session expired. Please login again.',
+            detail='Invalid auth token payload.',
         )
     user = db.get(User, user_id)
     if not user:
@@ -304,38 +408,6 @@ def _require_user(
             detail='User not found.',
         )
     return user
-
-
-@app.on_event('startup')
-def startup():
-    Base.metadata.create_all(bind=engine)
-    db = next(get_db())
-    try:
-        # Lightweight migration for existing DBs.
-        db.execute(
-            text(
-                "ALTER TABLE agent_connections ADD COLUMN status VARCHAR(30) NOT NULL DEFAULT 'connected'"
-            )
-        )
-        db.commit()
-    except Exception:
-        db.rollback()
-    try:
-        db.execute(
-            text(
-                "ALTER TABLE chat_sessions ADD COLUMN chat_status INTEGER NOT NULL DEFAULT 1"
-            )
-        )
-        db.commit()
-    except Exception:
-        db.rollback()
-    try:
-        existing = db.scalar(select(User).where(User.username == 'admin'))
-        if not existing:
-            db.add(User(username='admin', password='admin'))
-            db.commit()
-    finally:
-        db.close()
 
 
 @app.get('/api/health')
@@ -348,10 +420,7 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
     user = db.scalar(select(User).where(User.username == payload.username))
     if not user or user.password != payload.password:
         raise HTTPException(status_code=401, detail='Invalid credentials.')
-    token = str(uuid4())
-    expires_at = datetime.now(timezone.utc) + timedelta(minutes=SESSION_TTL_MINUTES)
-    SESSION_TOKENS[token] = (user.id, expires_at)
-    return LoginResponse(token=token, username=user.username, expires_at=expires_at)
+    return _build_login_response(user)
 
 
 @app.post('/api/register', response_model=LoginResponse)
@@ -372,14 +441,32 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(user)
 
-    token = str(uuid4())
-    expires_at = datetime.now(timezone.utc) + timedelta(minutes=SESSION_TTL_MINUTES)
-    SESSION_TOKENS[token] = (user.id, expires_at)
-    return LoginResponse(token=token, username=user.username, expires_at=expires_at)
+    return _build_login_response(user)
+
+
+@app.post('/api/refresh', response_model=RefreshResponse)
+def refresh(payload: RefreshRequest, db: Session = Depends(get_db)):
+    refresh_payload = verify_auth_token(payload.refresh_token, expected_type='refresh')
+    user_id = refresh_payload.get('user_id')
+    if not isinstance(user_id, int):
+        raise HTTPException(status_code=401, detail='Invalid refresh token payload.')
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=401, detail='User not found.')
+
+    access_token, access_expires_at = create_auth_token(user.id, token_type='access')
+    refresh_token, refresh_expires_at = create_auth_token(user.id, token_type='refresh')
+    return RefreshResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        access_expires_at=access_expires_at,
+        refresh_expires_at=refresh_expires_at,
+    )
 
 
 @app.get('/api/agents', response_model=list[AgentSummary])
 async def list_agents(
+    refresh_status: bool = Query(default=False),
     user: User = Depends(_require_user),
     db: Session = Depends(get_db),
 ):
@@ -388,7 +475,8 @@ async def list_agents(
         .where(AgentConnection.user_id == user.id)
         .order_by(AgentConnection.updated_at.desc())
     ).all()
-    await _sync_agents_status(rows, db)
+    if refresh_status:
+        await _sync_agents_status(rows, db)
     return [_serialize_agent(row) for row in rows]
 
 

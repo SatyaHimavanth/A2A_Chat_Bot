@@ -23,9 +23,11 @@ export default function LoginPage({ onAuthSuccess }) {
         body: form,
       })
       onAuthSuccess({
-        token: data.token,
+        accessToken: data.access_token,
+        refreshToken: data.refresh_token,
         username: data.username,
-        expiresAt: data.expires_at,
+        accessExpiresAt: data.access_expires_at,
+        refreshExpiresAt: data.refresh_expires_at,
       })
       navigate('/agents', { replace: true })
     } catch (err) {

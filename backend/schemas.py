@@ -15,9 +15,22 @@ class LoginRequest(BaseModel):
 
 
 class LoginResponse(BaseModel):
-    token: str
+    access_token: str
+    refresh_token: str
     username: str
-    expires_at: datetime
+    access_expires_at: datetime
+    refresh_expires_at: datetime
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
+class RefreshResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    access_expires_at: datetime
+    refresh_expires_at: datetime
 
 
 class AgentConnectRequest(BaseModel):

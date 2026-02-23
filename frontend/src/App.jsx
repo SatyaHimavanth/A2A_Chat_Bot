@@ -33,17 +33,33 @@ export default function App({ auth, setAuth }) {
   const toggleTheme = () => setTheme((t) => (t === 'light' ? 'dark' : 'light'))
 
   function handleLogout() {
-    setAuth({ token: '', username: '', expiresAt: '' })
-    localStorage.removeItem('auth_token')
+    setAuth({
+      accessToken: '',
+      refreshToken: '',
+      username: '',
+      accessExpiresAt: '',
+      refreshExpiresAt: '',
+    })
+    localStorage.removeItem('access_token')
+    localStorage.removeItem('refresh_token')
     localStorage.removeItem('username')
-    localStorage.removeItem('expires_at')
+    localStorage.removeItem('access_expires_at')
+    localStorage.removeItem('refresh_expires_at')
   }
 
-  function handleAuthSuccess({ token, username, expiresAt }) {
-    setAuth({ token, username, expiresAt })
-    localStorage.setItem('auth_token', token)
+  function handleAuthSuccess({
+    accessToken,
+    refreshToken,
+    username,
+    accessExpiresAt,
+    refreshExpiresAt,
+  }) {
+    setAuth({ accessToken, refreshToken, username, accessExpiresAt, refreshExpiresAt })
+    localStorage.setItem('access_token', accessToken)
+    localStorage.setItem('refresh_token', refreshToken || '')
     localStorage.setItem('username', username)
-    localStorage.setItem('expires_at', expiresAt || '')
+    localStorage.setItem('access_expires_at', accessExpiresAt || '')
+    localStorage.setItem('refresh_expires_at', refreshExpiresAt || '')
   }
 
   return (
@@ -55,9 +71,9 @@ export default function App({ auth, setAuth }) {
       <Route
         path="/agents"
         element={
-          <PrivateRoute token={auth.token}>
+          <PrivateRoute token={auth.accessToken}>
             <AgentsPage
-              token={auth.token}
+              token={auth.accessToken}
               username={auth.username}
               onLogout={handleLogout}
               theme={theme}
@@ -69,9 +85,9 @@ export default function App({ auth, setAuth }) {
       <Route
         path="/agents/:agentId"
         element={
-          <PrivateRoute token={auth.token}>
+          <PrivateRoute token={auth.accessToken}>
             <AgentDetailPage
-              token={auth.token}
+              token={auth.accessToken}
               username={auth.username}
               onLogout={handleLogout}
               theme={theme}
@@ -83,9 +99,9 @@ export default function App({ auth, setAuth }) {
       <Route
         path="/agents/:agentId/chat"
         element={
-          <PrivateRoute token={auth.token}>
+          <PrivateRoute token={auth.accessToken}>
             <ChatPage
-              token={auth.token}
+              token={auth.accessToken}
               username={auth.username}
               onLogout={handleLogout}
               theme={theme}
@@ -97,7 +113,7 @@ export default function App({ auth, setAuth }) {
       <Route
         path="*"
         element={
-          <Navigate to={auth.token ? '/agents' : '/login'} replace />
+          <Navigate to={auth.accessToken ? '/agents' : '/login'} replace />
         }
       />
     </Routes>
