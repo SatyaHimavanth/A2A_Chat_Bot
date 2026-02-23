@@ -1,5 +1,6 @@
 import json
 import os
+import asyncio
 from urllib.parse import urlparse
 from datetime import datetime
 from datetime import timedelta
@@ -51,6 +52,9 @@ app.add_middleware(
 )
 
 SESSION_TTL_MINUTES = int(os.getenv('SESSION_TTL_MINUTES', '120'))
+AGENT_STATUS_CHECK_TIMEOUT_SECONDS = float(
+    os.getenv('AGENT_STATUS_CHECK_TIMEOUT_SECONDS', '12')
+)
 SESSION_TOKENS: dict[str, tuple[int, datetime]] = {}
 
 
@@ -246,6 +250,30 @@ async def _sync_agent_status(agent: AgentConnection, db: Session) -> bool:
     return is_connected
 
 
+async def _sync_agents_status(rows: list[AgentConnection], db: Session) -> None:
+    if not rows:
+        return
+
+    async def _check_with_timeout(row: AgentConnection) -> bool:
+        try:
+            return await asyncio.wait_for(
+                _check_agent_connection(row),
+                timeout=AGENT_STATUS_CHECK_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            return False
+
+    statuses = await asyncio.gather(*[_check_with_timeout(row) for row in rows])
+    changed = False
+    for row, is_connected in zip(rows, statuses):
+        new_status = 'connected' if is_connected else 'disconnected'
+        if row.status != new_status:
+            row.status = new_status
+            changed = True
+    if changed:
+        db.commit()
+
+
 def _require_user(
     authorization: str | None = Header(default=None),
     db: Session = Depends(get_db),
@@ -360,8 +388,7 @@ async def list_agents(
         .where(AgentConnection.user_id == user.id)
         .order_by(AgentConnection.updated_at.desc())
     ).all()
-    for row in rows:
-        await _sync_agent_status(row, db)
+    await _sync_agents_status(rows, db)
     return [_serialize_agent(row) for row in rows]
 
 

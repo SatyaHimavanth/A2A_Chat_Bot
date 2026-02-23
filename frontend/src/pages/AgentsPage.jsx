@@ -5,6 +5,8 @@ import AppHeader from '../components/AppHeader'
 import ConnectAgentModal from '../components/ConnectAgentModal'
 import { apiRequest } from '../lib/api'
 
+const AGENTS_LOAD_TIMEOUT_MS = Number(import.meta.env.VITE_AGENTS_LOAD_TIMEOUT_MS || 30000)
+
 export default function AgentsPage({ token, username, onLogout, theme, toggleTheme }) {
   const [agents, setAgents] = useState([])
   const [showConnect, setShowConnect] = useState(false)
@@ -22,7 +24,10 @@ export default function AgentsPage({ token, username, onLogout, theme, toggleThe
           onUnauthorized: onLogout,
         }),
         new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('Loading agents timed out. Please try again.')), 15000),
+          setTimeout(
+            () => reject(new Error('Loading agents timed out. Please try again.')),
+            AGENTS_LOAD_TIMEOUT_MS,
+          ),
         ),
       ])
       setAgents(data)
