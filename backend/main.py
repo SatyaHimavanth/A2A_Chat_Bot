@@ -301,7 +301,7 @@ async def _resolve_agent_card(req: AgentConnectRequest) -> AgentCard:
             extended_json = extended_card.model_dump(exclude_none=True, by_alias=True)
             if extended_json == public_json:
                 raise HTTPException(
-                    status_code=401,
+                    status_code=400,
                     detail='Auth verification failed: token did not unlock extended card.',
                 )
             return extended_card
@@ -556,6 +556,28 @@ async def refresh_agent_status(
         raise HTTPException(status_code=404, detail='Agent not found.')
     await _sync_agent_status(agent, db)
     return _serialize_agent(agent)
+
+
+@app.delete('/api/agents/{agent_id}', status_code=204)
+def delete_agent(
+    agent_id: int,
+    user: User = Depends(_require_user),
+    db: Session = Depends(get_db),
+):
+    agent = db.get(AgentConnection, agent_id)
+    if not agent or agent.user_id != user.id:
+        raise HTTPException(status_code=404, detail='Agent not found.')
+
+    sessions = db.scalars(
+        select(ChatSession).where(
+            ChatSession.user_id == user.id,
+            ChatSession.agent_connection_id == agent_id,
+        )
+    ).all()
+    for session in sessions:
+        db.delete(session)
+    db.delete(agent)
+    db.commit()
 
 
 @app.get('/api/agents/{agent_id}/sessions', response_model=list[SessionSummary])
