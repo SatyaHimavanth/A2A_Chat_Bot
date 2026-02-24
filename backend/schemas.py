@@ -76,6 +76,8 @@ class SessionSummary(BaseModel):
     id: int
     context_id: str
     title: str
+    summary: str | None = None
+    tags: list[str] = Field(default_factory=list)
     chat_status: int = 1
     created_at: datetime
     updated_at: datetime

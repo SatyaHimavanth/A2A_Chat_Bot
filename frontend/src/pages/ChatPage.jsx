@@ -5,11 +5,14 @@ import AppHeader from '../components/AppHeader'
 import FlashMessages from '../components/FlashMessages'
 import { apiRequest, createSseUrl } from '../lib/api'
 
+const CHAT_STREAM_TIMEOUT_MS = Number(import.meta.env.VITE_CHAT_STREAM_TIMEOUT_MS || 240000)
+
 export default function ChatPage({ token, username, onLogout, theme, toggleTheme }) {
   const { agentId } = useParams()
   const [agentDetail, setAgentDetail] = useState(null)
   const [agentStatus, setAgentStatus] = useState('connected')
   const [sessions, setSessions] = useState([])
+  const [sessionSearch, setSessionSearch] = useState('')
   const [selectedSession, setSelectedSession] = useState(null)
   const [messages, setMessages] = useState([])
   const [chatInput, setChatInput] = useState('')
@@ -23,6 +26,7 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
   const [showArchived, setShowArchived] = useState(false)
 
   const messagesEndRef = useRef(null)
+  const hasSearchEffectInitialized = useRef(false)
 
   const activeSessions = sessions.filter((s) => (s.chat_status ?? 1) === 1)
   const archivedSessions = sessions.filter((s) => (s.chat_status ?? 1) === -1)
@@ -55,7 +59,9 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
   async function loadSessions() {
     setError('')
     try {
-      const data = await apiRequest(`/api/agents/${agentId}/sessions`, {
+      const query = sessionSearch.trim()
+      const suffix = query ? `?search=${encodeURIComponent(query)}` : ''
+      const data = await apiRequest(`/api/agents/${agentId}/sessions${suffix}`, {
         token,
         onUnauthorized: onLogout,
       })
@@ -106,11 +112,21 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
     setMessages([])
     loadAgentDetail()
     loadSessions()
-    refreshStatus() // Do the check on page refresh/load
   }, [agentId])
 
   useEffect(() => {
-    const intervalSecs = parseInt(import.meta.env.VITE_AGENT_STATUS_REFRESH_INTERVAL, 10) || 60
+    if (!hasSearchEffectInitialized.current) {
+      hasSearchEffectInitialized.current = true
+      return
+    }
+    const timer = setTimeout(() => {
+      loadSessions()
+    }, 250)
+    return () => clearTimeout(timer)
+  }, [sessionSearch])
+
+  useEffect(() => {
+    const intervalSecs = 60
     const timer = setInterval(() => {
       refreshStatus()
     }, intervalSecs * 1000)
@@ -119,7 +135,7 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
 
   async function createSession() {
     const topActiveSession = activeSessions[0]
-    if (topActiveSession) {
+    if (topActiveSession && typeof topActiveSession.id === 'number') {
       try {
         const topMessages = await apiRequest(`/api/sessions/${topActiveSession.id}/messages`, {
           token,
@@ -139,19 +155,46 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
     if (statusNow !== 'connected') {
       throw new Error('Agent cannot be connected right now.')
     }
-    const data = await apiRequest(`/api/agents/${agentId}/sessions`, {
-      method: 'POST',
-      token,
-      body: { title: 'New chat' },
-      onUnauthorized: onLogout,
-    })
-    setSessions((prev) => [data, ...prev])
-    setSelectedSession(data)
+
+    const tempId = `temp-${Date.now()}`
+    const tempSession = {
+      id: tempId,
+      context_id: 'creating...',
+      title: 'New chat',
+      summary: null,
+      tags: [],
+      chat_status: 1,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      _temp: true,
+    }
+    setSessions((prev) => [tempSession, ...prev])
+    setSelectedSession(tempSession)
     setMessages([])
-    return data
+
+    try {
+      const data = await apiRequest(`/api/agents/${agentId}/sessions`, {
+        method: 'POST',
+        token,
+        body: { title: 'New chat' },
+        onUnauthorized: onLogout,
+      })
+      setSessions((prev) => prev.map((s) => (s.id === tempId ? data : s)))
+      setSelectedSession(data)
+      return data
+    } catch (err) {
+      setSessions((prev) => prev.filter((s) => s.id !== tempId))
+      if (selectedSession?.id === tempId) {
+        setSelectedSession(null)
+      }
+      throw err
+    }
   }
 
   async function selectSession(session) {
+    if (session?._temp) {
+      return
+    }
     setSelectedSession(session)
     try {
       const data = await apiRequest(`/api/sessions/${session.id}/messages`, {
@@ -313,7 +356,10 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
     }
     setMessages((prev) => [...prev, userMessage, assistantPlaceholder])
 
+    let timeoutId
     try {
+      const controller = new AbortController()
+      timeoutId = setTimeout(() => controller.abort('stream-timeout'), CHAT_STREAM_TIMEOUT_MS)
       const res = await fetch(createSseUrl(`/api/sessions/${session.id}/stream`), {
         method: 'POST',
         headers: {
@@ -321,6 +367,7 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ message: messageText }),
+        signal: controller.signal,
       })
       if (res.status === 401) {
         onLogout()
@@ -337,44 +384,91 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
       }
       const decoder = new TextDecoder('utf-8')
       let buffer = ''
-      let receivedAssistantSnapshot = false
+      let latestAssistantText = ''
+      let hadStreamError = false
+      const processPayload = (payload) => {
+        if (payload.type === 'assistant_snapshot') {
+          latestAssistantText = typeof payload.text === 'string' ? payload.text : ''
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.streaming ? { ...msg, content: payload.text } : msg,
+            ),
+          )
+        }
+        if (payload.type === 'error') {
+          hadStreamError = true
+          reportError(payload.message || 'Agent stream failed.')
+        }
+      }
+
+      const processChunk = (chunk) => {
+        const dataLines = chunk
+          .split(/\r?\n/)
+          .filter((row) => row.startsWith('data:'))
+          .map((row) => row.slice(5).trimStart())
+          .filter(Boolean)
+        if (!dataLines.length) return
+        for (const rawData of dataLines) {
+          let payload
+          try {
+            payload = JSON.parse(rawData)
+          } catch {
+            continue
+          }
+          processPayload(payload)
+        }
+      }
       while (true) {
         const { value, done } = await reader.read()
-        if (done) break
+        if (done) {
+          buffer += decoder.decode()
+          break
+        }
         buffer += decoder.decode(value, { stream: true })
-        const chunks = buffer.split('\n\n')
+        const chunks = buffer.split(/\r?\n\r?\n/)
         buffer = chunks.pop() || ''
 
         for (const chunk of chunks) {
-          const line = chunk
-            .split('\n')
-            .find((row) => row.startsWith('data: '))
-          if (!line) continue
-          const payload = JSON.parse(line.slice(6))
-          if (payload.type === 'assistant_snapshot') {
-            receivedAssistantSnapshot = true
-            setMessages((prev) =>
-              prev.map((msg) =>
-                msg.streaming ? { ...msg, content: payload.text } : msg,
-              ),
-            )
-          }
-          if (payload.type === 'error') {
-            reportError(payload.message || 'Agent stream failed.')
-          }
+          processChunk(chunk)
         }
+      }
+
+      if (buffer.trim()) {
+        processChunk(buffer)
       }
 
       setMessages((prev) =>
         prev.map((msg) => (msg.streaming ? { ...msg, streaming: false } : msg)),
       )
-      if (!receivedAssistantSnapshot) {
+      await loadSessions()
+      if (!hadStreamError && !latestAssistantText.trim()) {
+        try {
+          const persisted = await apiRequest(`/api/sessions/${session.id}/messages`, {
+            token,
+            onUnauthorized: onLogout,
+          })
+          if (Array.isArray(persisted) && persisted.length) {
+            setMessages(persisted)
+            const hasAssistant = persisted.some(
+              (m) => m.role === 'assistant' && String(m.content || '').trim(),
+            )
+            if (hasAssistant) {
+              return
+            }
+          }
+        } catch {
+          // keep fallback error below
+        }
         reportError('No response received from agent. Please try again.')
       }
-      await loadSessions()
     } catch (err) {
-      reportError(err.message)
+      if (err?.name === 'AbortError') {
+        reportError('Agent response timed out. Please try again.')
+      } else {
+        reportError(err.message)
+      }
     } finally {
+      if (timeoutId) clearTimeout(timeoutId)
       setIsLoading(false)
     }
   }
@@ -416,6 +510,15 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
               )}
             </div>
           </div>
+          <div className="p-3 border-b border-cardBorder shrink-0">
+            <input
+              type="text"
+              className="input-base py-2 text-xs"
+              placeholder="Search sessions by title, summary, tags..."
+              value={sessionSearch}
+              onChange={(e) => setSessionSearch(e.target.value)}
+            />
+          </div>
 
           <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-2">
             {!showArchived ? (
@@ -427,7 +530,13 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
                   >
                     <button className="text-left w-full p-3 bg-transparent outline-none focus:outline-none" onClick={() => selectSession(session)}>
                       <strong className="text-sm font-semibold text-slate-800 dark:text-slate-200 block truncate">{session.title || 'Untitled'}</strong>
+                      {session.summary && <small className="text-xs text-slate-500 block truncate mt-1">{session.summary}</small>}
                       <small className="text-xs text-slate-500 font-mono block truncate mt-1">{session.context_id}</small>
+                      {!!session.tags?.length && (
+                        <small className="text-[11px] text-slate-500 block truncate mt-1">
+                          #{session.tags.join(' #')}
+                        </small>
+                      )}
                     </button>
                     <div className="flex gap-2 p-2 bg-slate-100/50 dark:bg-slate-900/50 border-t border-cardBorder">
                       <button className="text-[11px] font-medium text-slate-600 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200" onClick={(e) => openRenameModal(e, session)}>Rename</button>

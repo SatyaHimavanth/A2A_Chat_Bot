@@ -44,14 +44,10 @@ export default function AgentDetailPage({ token, username, onLogout, theme, togg
 
   useEffect(() => {
     loadDetail()
-    // Perform an initial status refresh immediately
-    if (selectedModeId) {
-      refreshStatus(selectedModeId)
-    }
-  }, [agentId, selectedModeId])
+  }, [agentId])
 
   useEffect(() => {
-    const intervalSecs = parseInt(import.meta.env.VITE_AGENT_STATUS_REFRESH_INTERVAL, 10) || 60
+    const intervalSecs = 60
     const timer = setInterval(() => {
       loadDetail()
     }, intervalSecs * 1000)
@@ -68,7 +64,7 @@ export default function AgentDetailPage({ token, username, onLogout, theme, togg
       <div className="max-w-6xl mx-auto">
         <AppHeader
           title="Agent Details"
-          subtitle="Auto-refresh status every 15 seconds"
+          subtitle="Auto-refresh status every 60 seconds"
           rightActionLabel="Chat with Agent"
           onRightAction={() => selectedModeId && navigate(`/agents/${selectedModeId}/chat`)}
           onLogout={onLogout}

@@ -1,4 +1,4 @@
-import { StrictMode, useState } from 'react'
+import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
 
@@ -22,7 +22,5 @@ function Root() {
 }
 
 createRoot(document.getElementById('root')).render(
-  <StrictMode>
-    <Root />
-  </StrictMode>,
+  <Root />,
 )
