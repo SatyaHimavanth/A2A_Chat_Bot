@@ -5,6 +5,7 @@ import AgentDetailPage from './pages/AgentDetailPage'
 import AgentsPage from './pages/AgentsPage'
 import ChatPage from './pages/ChatPage'
 import LoginPage from './pages/LoginPage'
+import PlaygroundPage from './pages/PlaygroundPage'
 import './App.css'
 
 function PrivateRoute({ token, children }) {
@@ -101,6 +102,20 @@ export default function App({ auth, setAuth }) {
         element={
           <PrivateRoute token={auth.accessToken}>
             <ChatPage
+              token={auth.accessToken}
+              username={auth.username}
+              onLogout={handleLogout}
+              theme={theme}
+              toggleTheme={toggleTheme}
+            />
+          </PrivateRoute>
+        }
+      />
+      <Route
+        path="/playground"
+        element={
+          <PrivateRoute token={auth.accessToken}>
+            <PlaygroundPage
               token={auth.accessToken}
               username={auth.username}
               onLogout={handleLogout}

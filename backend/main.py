@@ -8,6 +8,7 @@ from database import Base, engine, get_db
 from models import User
 from routes.agents import router as agents_router
 from routes.auth import router as auth_router
+from routes.playground import router as playground_router
 from routes.sessions import router as sessions_router
 
 
@@ -60,6 +61,7 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(agents_router)
 app.include_router(sessions_router)
+app.include_router(playground_router)
 
 
 if __name__ == '__main__':

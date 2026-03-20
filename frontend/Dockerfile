@@ -3,6 +3,7 @@ FROM node:20-alpine AS build
 WORKDIR /app
 
 COPY package*.json /app/
+COPY .env /app/.env
 RUN npm ci
 
 COPY . /app

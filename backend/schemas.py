@@ -96,3 +96,24 @@ class ChatRequest(BaseModel):
 
 class SessionRenameRequest(BaseModel):
     title: str
+
+
+class PlaygroundCompareRequest(BaseModel):
+    agent_ids: list[int] = Field(min_length=1)
+    message: str
+    context_ids: dict[int, str] = Field(default_factory=dict)
+
+
+class PlaygroundAgentResult(BaseModel):
+    agent_id: int
+    card_name: str
+    mode: str
+    context_id: str
+    latency_ms: int
+    response: str = ''
+    error: str | None = None
+    status: Literal['ok', 'error']
+
+
+class PlaygroundCompareResponse(BaseModel):
+    results: list[PlaygroundAgentResult] = Field(default_factory=list)

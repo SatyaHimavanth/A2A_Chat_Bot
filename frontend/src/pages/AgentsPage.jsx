@@ -92,7 +92,7 @@ export default function AgentsPage({ token, username, onLogout, theme, toggleThe
           </div>
         )}
         <section className="mt-8 animate-slide-up">
-          <div className="mb-5">
+          <div className="mb-5 flex items-center gap-3">
             <input
               type="text"
               className="input-base"
@@ -100,6 +100,13 @@ export default function AgentsPage({ token, username, onLogout, theme, toggleThe
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
             />
+            <button
+              type="button"
+              className="btn-ghost whitespace-nowrap hidden" // remove hidden to add playground button
+              onClick={() => navigate('/playground')}
+            >
+              Open Playground
+            </button>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {isLoading &&

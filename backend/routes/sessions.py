@@ -2,18 +2,14 @@ import json
 from datetime import datetime, timezone
 from uuid import uuid4
 
-import httpx
-from a2a.client import ClientConfig, ClientFactory
-from a2a.types import AgentCard, Message, Part, Role, TextPart, TransportProtocol
-from a2a.utils.message import get_message_text
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from database import get_db
+from database import SessionLocal, get_db
 from deps import require_user
-from models import AgentConnection, AgentMode, ChatMessage, ChatSession, User
+from models import AgentConnection, ChatMessage, ChatSession, User
 from schemas import (
     ChatRequest,
     MessageSummary,
@@ -22,8 +18,8 @@ from schemas import (
     SessionSummary,
 )
 from services.agent_service import status_manager
-from core.config import STREAM_CONNECT_TIMEOUT_SECONDS, STREAM_READ_TIMEOUT_SECONDS
-from services.serialization import auth_context, extract_text_from_task_event, serialize_session
+from services.agent_transport import send_agent_message
+from services.serialization import serialize_session
 from services.session_intelligence import refine_title, update_session_intelligence
 
 router = APIRouter(prefix='/api', tags=['sessions'])
@@ -119,50 +115,17 @@ async def stream_chat(
         session.chat_status = 1
     db.commit()
 
-    card = AgentCard.model_validate(agent.card_payload)
-    auth_token = agent.auth_token if agent.mode == AgentMode.authorized else None
-
     async def event_stream():
-        httpx_client = httpx.AsyncClient(
-            timeout=httpx.Timeout(
-                connect=STREAM_CONNECT_TIMEOUT_SECONDS,
-                read=STREAM_READ_TIMEOUT_SECONDS,
-                write=STREAM_CONNECT_TIMEOUT_SECONDS,
-                pool=STREAM_CONNECT_TIMEOUT_SECONDS,
-            )
-        )
-        cfg = ClientConfig(
-            httpx_client=httpx_client,
-            supported_transports=[
-                TransportProtocol.jsonrpc,
-                TransportProtocol.http_json,
-            ],
-            streaming=bool(card.capabilities.streaming),
-        )
-        a2a_client = ClientFactory(cfg).create(card)
-        call_context = auth_context(auth_token)
         assistant_text = ''
         try:
-            request = Message(
-                role=Role.user,
-                parts=[Part(TextPart(text=payload.message))],
-                message_id=str(uuid4()),
-                context_id=session.context_id,
-            )
-            yield f"data: {json.dumps({'type': 'start'})}\\n\\n"
-            async for response in a2a_client.send_message(request, context=call_context):
-                if isinstance(response, tuple):
-                    task, update = response
-                    text = extract_text_from_task_event(task, update)
-                else:
-                    text = get_message_text(response)
-                if text:
-                    assistant_text = text
-                    yield (
-                        f"data: {json.dumps({'type': 'assistant_snapshot', 'text': text})}\\n\\n"
-                    )
+            yield f"data: {json.dumps({'type': 'start'})}\n\n"
+            assistant_text = await send_agent_message(agent, payload.message, session.context_id)
+            if assistant_text:
+                yield (
+                    f"data: {json.dumps({'type': 'assistant_snapshot', 'text': assistant_text})}\n\n"
+                )
 
-            db2 = next(get_db())
+            db2 = SessionLocal()
             try:
                 db_session = db2.get(ChatSession, session.id)
                 if db_session:
@@ -180,9 +143,9 @@ async def stream_chat(
             finally:
                 db2.close()
 
-            yield f"data: {json.dumps({'type': 'done'})}\\n\\n"
-        except Exception as e:
-            db3 = next(get_db())
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        except Exception as exc:
+            db3 = SessionLocal()
             try:
                 db_agent = db3.get(AgentConnection, agent.id)
                 if db_agent:
@@ -190,10 +153,7 @@ async def stream_chat(
                     db3.commit()
             finally:
                 db3.close()
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\\n\\n"
-        finally:
-            await a2a_client.close()
-            await httpx_client.aclose()
+            yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
 
     return StreamingResponse(event_stream(), media_type='text/event-stream')
 
