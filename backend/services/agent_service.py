@@ -5,6 +5,7 @@ from urllib.parse import urlparse
 import httpx
 from a2a.client import A2ACardResolver, ClientConfig, ClientFactory
 from a2a.types import AgentCard, TransportProtocol
+from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
@@ -93,12 +94,45 @@ def normalize_card_url(card: AgentCard, base_url: str) -> AgentCard:
     return card
 
 
+async def _fetch_public_card(client: httpx.AsyncClient, base_url: str) -> AgentCard:
+    resolver = A2ACardResolver(httpx_client=client, base_url=base_url)
+    try:
+        return normalize_card_url(await resolver.get_agent_card(), base_url)
+    except Exception:
+        response = await client.get(f'{base_url}{AGENT_CARD_WELL_KNOWN_PATH}')
+        response.raise_for_status()
+        return normalize_card_url(AgentCard.model_validate(response.json()), base_url)
+
+
+async def _fetch_lightweight_extended_card(
+    client: httpx.AsyncClient,
+    base_url: str,
+    auth_token: str,
+) -> AgentCard:
+    response = await client.post(
+        f'{base_url}/',
+        json={
+            'jsonrpc': '2.0',
+            'id': 'agent-card',
+            'method': 'agent/getCard',
+        },
+        headers={'Authorization': f'Bearer {auth_token}'},
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if payload.get('error'):
+        raise HTTPException(
+            status_code=400,
+            detail=payload['error'].get('message') or 'Failed to fetch authenticated card.',
+        )
+    return normalize_card_url(AgentCard.model_validate(payload.get('result') or {}), base_url)
+
+
 async def resolve_agent_card(req: AgentConnectRequest) -> AgentCard:
     base_url = req.base_url.rstrip('/')
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=60.0)) as client:
-            resolver = A2ACardResolver(httpx_client=client, base_url=base_url)
-            public_card = normalize_card_url(await resolver.get_agent_card(), base_url)
+            public_card = await _fetch_public_card(client, base_url)
 
             if req.mode == AgentMode.public.value:
                 return public_card
@@ -127,10 +161,17 @@ async def resolve_agent_card(req: AgentConnectRequest) -> AgentCard:
             a2a_client = ClientFactory(cfg).create(public_card)
             call_context = auth_context(req.auth_token)
             try:
-                extended_card = normalize_card_url(
-                    await a2a_client.get_card(context=call_context),
-                    base_url,
-                )
+                try:
+                    extended_card = normalize_card_url(
+                        await a2a_client.get_card(context=call_context),
+                        base_url,
+                    )
+                except Exception:
+                    extended_card = await _fetch_lightweight_extended_card(
+                        client,
+                        base_url,
+                        req.auth_token,
+                    )
             finally:
                 await a2a_client.close()
 

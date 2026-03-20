@@ -4,6 +4,7 @@ This is a sample agent that exposes:
 
 - `GET /.well-known/agent-card.json`
 - `POST /` using a lightweight JSON-RPC contract
+- optional bearer-token based extended card support
 
 It is intentionally similar to A2A, but it is not a full A2A server.
 
@@ -11,6 +12,12 @@ It is intentionally similar to A2A, but it is not a full A2A server.
 
 ```bash
 uv run .
+```
+
+Authorized token for extended mode:
+
+```text
+dummy-token-for-extended-card
 ```
 
 ## Supported JSON-RPC methods
@@ -26,6 +33,14 @@ Request:
   "method": "agent/getCard"
 }
 ```
+
+If the request includes:
+
+```text
+Authorization: Bearer dummy-token-for-extended-card
+```
+
+then the agent returns an extended card with additional skills.
 
 ### `message/send`
 
@@ -84,4 +99,3 @@ Response:
 
 - `message/stream` is not implemented in this sample.
 - The card sets `streaming=false` to make that explicit.
-

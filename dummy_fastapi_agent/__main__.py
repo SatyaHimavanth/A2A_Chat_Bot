@@ -4,7 +4,7 @@ from uuid import uuid4
 
 import click
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 
@@ -18,10 +18,11 @@ logger = logging.getLogger(__name__)
 
 PROTOCOL_VERSION = '0.1.0'
 SUPPORTED_CONTENT_TYPES = ['text', 'text/plain']
+AUTHORIZED_TOKEN = 'dummy-token-for-extended-card'
 context_history: dict[str, list[str]] = {}
 
 
-def build_agent_card(host: str, port: int) -> dict[str, Any]:
+def build_public_agent_card(host: str, port: int) -> dict[str, Any]:
     return {
         'name': 'Dummy FastAPI Agent',
         'description': 'Sample lightweight agent using an A2A-like JSON-RPC format.',
@@ -35,8 +36,15 @@ def build_agent_card(host: str, port: int) -> dict[str, Any]:
             'streaming': False,
             'pushNotifications': False,
         },
-        'supportsAuthenticatedExtendedCard': False,
-        'securitySchemes': {},
+        'supportsAuthenticatedExtendedCard': True,
+        'securitySchemes': {
+            'bearerAuth': {
+                'type': 'http',
+                'scheme': 'bearer',
+                'bearerFormat': 'Opaque',
+                'description': 'Bearer token required for advanced dummy agent access.',
+            }
+        },
         'skills': [
             {
                 'id': 'dummy_chat_agent',
@@ -48,6 +56,29 @@ def build_agent_card(host: str, port: int) -> dict[str, Any]:
                     'summarize what we just talked about',
                 ],
             }
+        ],
+    }
+
+
+def build_extended_agent_card(public_card: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **public_card,
+        'name': 'Dummy FastAPI Agent - Extended Edition',
+        'description': 'Authorized dummy agent with extra capabilities.',
+        'version': '1.0.1',
+        'security': [{'bearerAuth': []}],
+        'skills': [
+            *public_card['skills'],
+            {
+                'id': 'dummy_advanced_agent',
+                'name': 'Advanced Dummy Agent',
+                'description': 'Adds advanced instructions and privileged responses.',
+                'tags': ['advanced', 'authorized', 'power', 'root'],
+                'examples': [
+                    'what advanced tools do you have',
+                    'show authorized capabilities',
+                ],
+            },
         ],
     }
 
@@ -101,7 +132,13 @@ def extract_user_text(message: dict[str, Any] | None) -> str:
     return ' '.join(part for part in text_parts if part).strip()
 
 
-def generate_reply(user_text: str, context_id: str) -> str:
+def is_authorized(request: Request) -> bool:
+    auth_header = request.headers.get('authorization', '').strip()
+    expected = f'Bearer {AUTHORIZED_TOKEN}'
+    return auth_header == expected
+
+
+def generate_reply(user_text: str, context_id: str, authorized: bool) -> str:
     history = context_history.setdefault(context_id, [])
     history.append(user_text)
 
@@ -113,29 +150,39 @@ def generate_reply(user_text: str, context_id: str) -> str:
         return f'Current context is {context_id}. Before this message you said: {prior_turns}.'
     if 'summary' in normalized or 'summarize' in normalized:
         return f'This conversation currently has {len(history)} user turns. Latest prompt: {user_text}'
+    if 'tool' in normalized or 'skill' in normalized or 'capabilities' in normalized:
+        if authorized:
+            return (
+                'Authorized tools: chat memory, summaries, advanced capability hints, '
+                'power, and root.'
+            )
+        return 'Public tools: chat memory and summaries.'
 
+    prefix = 'Authorized mode active. ' if authorized else ''
     return (
-        'Hello from the dummy FastAPI agent. '
-        f'You said: {user_text}. '
-        f'Context: {context_id}. '
-        f'This is turn {len(history)} in the conversation.'
+        prefix
+        + 'Hello from the dummy FastAPI agent. '
+        + f'You said: {user_text}. '
+        + f'Context: {context_id}. '
+        + f'This is turn {len(history)} in the conversation.'
     )
 
 
 def create_app(host: str, port: int) -> FastAPI:
     app = FastAPI(title='Dummy FastAPI Agent')
-    agent_card = build_agent_card(host, port)
+    public_card = build_public_agent_card(host, port)
+    extended_card = build_extended_agent_card(public_card)
 
     @app.get('/.well-known/agent-card.json')
     async def get_agent_card() -> dict[str, Any]:
-        return agent_card
+        return public_card
 
     @app.post('/')
-    async def jsonrpc_handler(payload: dict[str, Any]) -> JSONResponse:
-        print("Request:", payload)
+    async def jsonrpc_handler(request: Request, payload: dict[str, Any]) -> JSONResponse:
         request_id = payload.get('id')
         method = payload.get('method')
         params = payload.get('params') or {}
+        authorized = is_authorized(request)
 
         if payload.get('jsonrpc') != '2.0':
             return JSONResponse(
@@ -144,7 +191,8 @@ def create_app(host: str, port: int) -> FastAPI:
             )
 
         if method == 'agent/getCard':
-            return JSONResponse(content=jsonrpc_result(request_id, agent_card))
+            card = extended_card if authorized else public_card
+            return JSONResponse(content=jsonrpc_result(request_id, card))
 
         if method == 'message/stream':
             return JSONResponse(
@@ -166,7 +214,7 @@ def create_app(host: str, port: int) -> FastAPI:
         message = params.get('message') or {}
         context_id = message.get('contextId') or str(uuid4())
         user_text = extract_user_text(message)
-        reply_text = generate_reply(user_text, context_id)
+        reply_text = generate_reply(user_text, context_id, authorized)
 
         result = {
             'status': 'completed',
@@ -184,6 +232,7 @@ def create_app(host: str, port: int) -> FastAPI:
 @click.option('--port', 'port', default=11000)
 def main(host: str, port: int) -> None:
     logger.info('Starting dummy FastAPI agent on http://%s:%s', host, port)
+    logger.info('Authorized token: %s', AUTHORIZED_TOKEN)
     app = create_app(host, port)
     uvicorn.run(app, host=host, port=port)
 
