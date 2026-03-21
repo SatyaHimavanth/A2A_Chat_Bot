@@ -6,10 +6,13 @@ from sqlalchemy import select, text
 
 from database import Base, engine, get_db
 from models import User
+from core.config import STT_PRELOAD_ON_STARTUP
 from routes.agents import router as agents_router
 from routes.auth import router as auth_router
 from routes.playground import router as playground_router
 from routes.sessions import router as sessions_router
+from routes.stt import router as stt_router
+from services.stt_service import stt_service
 
 
 def _run_startup() -> None:
@@ -41,6 +44,8 @@ def _run_startup() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     _run_startup()
+    if STT_PRELOAD_ON_STARTUP:
+        await stt_service.ensure_loaded()
     yield
 
 
@@ -62,6 +67,7 @@ app.include_router(auth_router)
 app.include_router(agents_router)
 app.include_router(sessions_router)
 app.include_router(playground_router)
+app.include_router(stt_router)
 
 
 if __name__ == '__main__':

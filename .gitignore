@@ -12,9 +12,10 @@ wheels/
 uv.lock
 
 # nodejs files
-nodemodules/
+node_modules/
 
 
-# other files
+# other files and folders
 chatbot.db
 ExampleAgentLinks.md
+models

@@ -3,6 +3,8 @@ import { useParams } from 'react-router-dom'
 
 import AppHeader from '../components/AppHeader'
 import FlashMessages from '../components/FlashMessages'
+import MarkdownMessage from '../components/MarkdownMessage'
+import SpeechToTextControl from '../components/SpeechToTextControl'
 import { apiRequest, createSseUrl } from '../lib/api'
 
 const CHAT_STREAM_TIMEOUT_MS = Number(import.meta.env.VITE_CHAT_STREAM_TIMEOUT_MS || 240000)
@@ -602,12 +604,16 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
                   <strong className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 block mb-1">
                     {msg.role === 'user' ? 'You' : (agentDetail?.card_name || 'Agent')}
                   </strong>
-                  <div className="text-[0.95rem] whitespace-pre-wrap break-words leading-relaxed text-slate-700 dark:text-slate-200 font-medium">
-                    {msg.content || (msg.streaming && <span className="flex gap-1 items-center py-1 mt-1 opacity-60">
+                  <div>
+                    {msg.content ? (
+                      <MarkdownMessage content={msg.content} />
+                    ) : (
+                      msg.streaming && <span className="flex gap-1 items-center py-1 mt-1 opacity-60">
                       <span className="w-1.5 h-1.5 rounded-full bg-slate-500 dark:bg-slate-400 animate-bounce" style={{ animationDelay: "0ms" }}></span>
                       <span className="w-1.5 h-1.5 rounded-full bg-slate-500 dark:bg-slate-400 animate-bounce" style={{ animationDelay: "150ms" }}></span>
                       <span className="w-1.5 h-1.5 rounded-full bg-slate-500 dark:bg-slate-400 animate-bounce" style={{ animationDelay: "300ms" }}></span>
-                    </span>)}
+                    </span>
+                    )}
                   </div>
                 </div>
               </div>
@@ -645,6 +651,12 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
                   }}
                 />
               </div>
+              <SpeechToTextControl
+                token={token}
+                disabled={isLoading || agentStatus !== 'connected' || selectedSession?.chat_status === -1}
+                onTranscriptChange={(text) => setChatInput(text)}
+                onError={reportError}
+              />
               <button
                 type="submit"
                 className={`shrink-0 w-12 h-12 flex items-center justify-center rounded-2xl transition-all shadow-md active:scale-95 ${!chatInput.trim() || isLoading || agentStatus !== 'connected' || selectedSession?.chat_status === -1 ? 'bg-slate-200 dark:bg-slate-800 text-slate-400 cursor-not-allowed' : 'bg-primary text-white hover:bg-primary-hover hover:shadow-primary/30'}`}

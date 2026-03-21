@@ -81,3 +81,15 @@ export async function apiRequest(
 export function createSseUrl(path) {
   return `${API_BASE}${path}`
 }
+
+export function createWebSocketUrl(path, query = {}) {
+  const base = API_BASE || window.location.origin
+  const url = new URL(`${base}${path}`)
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+  Object.entries(query).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && `${value}` !== '') {
+      url.searchParams.set(key, String(value))
+    }
+  })
+  return url.toString()
+}
