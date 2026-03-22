@@ -11,7 +11,10 @@ from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
 from core.config import (
     HF_TOKEN,
     STT_MODEL_ID,
+    STT_MAX_NEW_TOKENS,
     STT_MODELS_DIR,
+    STT_NOISE_GATE_THRESHOLD,
+    STT_MIN_VOICED_RATIO,
     STT_WHISPER_SOURCE_LANGUAGE,
     STT_WHISPER_TASK,
 )
@@ -40,6 +43,67 @@ class SpeechToTextService:
         self._is_whisper = 'whisper' in model_id.lower()
         self._whisper_task = STT_WHISPER_TASK or 'translate'
         self._whisper_source_language = STT_WHISPER_SOURCE_LANGUAGE or None
+        self._max_new_tokens = max(16, STT_MAX_NEW_TOKENS)
+        self._noise_gate_threshold = max(0.0, float(STT_NOISE_GATE_THRESHOLD))
+        self._min_voiced_ratio = min(1.0, max(0.0, float(STT_MIN_VOICED_RATIO)))
+
+    def _prepare_audio(self, audio_samples: np.ndarray) -> np.ndarray:
+        if audio_samples.size == 0:
+            return audio_samples
+
+        samples = np.asarray(audio_samples, dtype=np.float32).copy()
+        abs_samples = np.abs(samples)
+        voiced_mask = abs_samples >= self._noise_gate_threshold
+        voiced_ratio = float(np.mean(voiced_mask)) if voiced_mask.size else 0.0
+        if voiced_ratio < self._min_voiced_ratio:
+            logger.info(
+                'STT skipped transcription due to low voiced ratio: voiced_ratio=%.4f threshold=%.4f',
+                voiced_ratio,
+                self._min_voiced_ratio,
+            )
+            return np.array([], dtype=np.float32)
+
+        samples[~voiced_mask] = 0.0
+        voiced_indices = np.flatnonzero(voiced_mask)
+        if voiced_indices.size == 0:
+            return np.array([], dtype=np.float32)
+
+        start = int(voiced_indices[0])
+        end = int(voiced_indices[-1]) + 1
+        trimmed = samples[start:end]
+        peak = float(np.max(np.abs(trimmed))) if trimmed.size else 0.0
+        if peak > 0.0:
+            trimmed = np.clip(trimmed / peak, -1.0, 1.0)
+        return trimmed
+
+    def _call_generate(self, model, model_inputs: dict, *, max_new_tokens: int, task: str | None = None, language: str | None = None):
+        generation_config = model.generation_config
+        original_values = {
+            'max_length': getattr(generation_config, 'max_length', None),
+            'max_new_tokens': getattr(generation_config, 'max_new_tokens', None),
+            'do_sample': getattr(generation_config, 'do_sample', None),
+            'num_beams': getattr(generation_config, 'num_beams', None),
+            'task': getattr(generation_config, 'task', None),
+            'language': getattr(generation_config, 'language', None),
+            'forced_decoder_ids': getattr(generation_config, 'forced_decoder_ids', None),
+        }
+        try:
+            generation_config.max_length = None
+            generation_config.max_new_tokens = max_new_tokens
+            generation_config.do_sample = False
+            generation_config.num_beams = 1
+            if hasattr(generation_config, 'task'):
+                generation_config.task = task
+            if hasattr(generation_config, 'language'):
+                generation_config.language = language
+            if hasattr(generation_config, 'forced_decoder_ids'):
+                generation_config.forced_decoder_ids = None
+            with torch.inference_mode():
+                return model.generate(**model_inputs)
+        finally:
+            for key, value in original_values.items():
+                if hasattr(generation_config, key):
+                    setattr(generation_config, key, value)
 
     def _ensure_local_model(self) -> Path:
         config_path = self.local_model_dir / 'config.json'
@@ -78,13 +142,14 @@ class SpeechToTextService:
 
     def _transcribe_sync(self, audio_samples: np.ndarray, sample_rate: int) -> str:
         self._load_model_sync()
-        if audio_samples.size == 0:
+        prepared_audio = self._prepare_audio(audio_samples)
+        if prepared_audio.size == 0:
             return ''
         logger.info(
             'STT transcription started: samples=%s sample_rate=%s duration_sec=%.2f',
-            audio_samples.size,
+            prepared_audio.size,
             sample_rate,
-            audio_samples.size / max(sample_rate, 1),
+            prepared_audio.size / max(sample_rate, 1),
         )
 
         processor = self._processor
@@ -95,29 +160,46 @@ class SpeechToTextService:
         with self._model_lock:
             if self._is_whisper:
                 model_inputs = processor(
-                    audio=audio_samples,
+                    audio=prepared_audio,
                     sampling_rate=sample_rate,
                     return_tensors='pt',
+                    return_attention_mask=True,
                 )
                 input_features = model_inputs.get('input_features')
                 if input_features is None:
                     raise RuntimeError('Whisper processor did not return input_features.')
-                input_features = input_features.to(self._device)
-                generate_kwargs = {
-                    'input_features': input_features,
-                    'max_new_tokens': 200,
-                    'do_sample': False,
-                    'num_beams': 1,
+                generate_inputs = {
+                    'input_features': input_features.to(self._device),
                 }
-                if hasattr(processor, 'get_decoder_prompt_ids'):
-                    forced_decoder_ids = processor.get_decoder_prompt_ids(
-                        language=self._whisper_source_language,
-                        task=self._whisper_task,
+                attention_mask = model_inputs.get('attention_mask')
+                if attention_mask is not None:
+                    generate_inputs['attention_mask'] = attention_mask.to(self._device)
+                max_target_positions = getattr(model.config, 'max_target_positions', None)
+                decoder_input_len = 2
+                if max_target_positions:
+                    if hasattr(processor, 'get_decoder_prompt_ids'):
+                        prompt_ids = processor.get_decoder_prompt_ids(
+                            language=self._whisper_source_language,
+                            task=self._whisper_task,
+                        )
+                        if prompt_ids:
+                            decoder_input_len = len(prompt_ids) + 2
+                    safe_max_new_tokens = max(
+                        1,
+                        min(
+                            int(self._max_new_tokens),
+                            int(max_target_positions) - int(decoder_input_len) - 1,
+                        ),
                     )
-                    if forced_decoder_ids:
-                        generate_kwargs['forced_decoder_ids'] = forced_decoder_ids
-                with torch.inference_mode():
-                    generated_ids = model.generate(**generate_kwargs)
+                else:
+                    safe_max_new_tokens = self._max_new_tokens
+                generated_ids = self._call_generate(
+                    model,
+                    generate_inputs,
+                    max_new_tokens=safe_max_new_tokens,
+                    task=self._whisper_task,
+                    language=self._whisper_source_language,
+                )
                 text = processor.batch_decode(
                     generated_ids,
                     skip_special_tokens=True,
@@ -132,7 +214,7 @@ class SpeechToTextService:
                 )
                 model_inputs = processor(
                     prompt,
-                    audio_samples,
+                    prepared_audio,
                     sampling_rate=sample_rate,
                     return_tensors='pt',
                 )
@@ -140,13 +222,11 @@ class SpeechToTextService:
                     key: value.to(self._device)
                     for key, value in model_inputs.items()
                 }
-                with torch.inference_mode():
-                    generated_ids = model.generate(
-                        **model_inputs,
-                        max_new_tokens=200,
-                        do_sample=False,
-                        num_beams=1,
-                    )
+                generated_ids = self._call_generate(
+                    model,
+                    model_inputs,
+                    max_new_tokens=self._max_new_tokens,
+                )
 
                 input_ids = model_inputs.get('input_ids')
                 if input_ids is not None:

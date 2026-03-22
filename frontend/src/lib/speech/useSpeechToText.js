@@ -3,8 +3,6 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { createWebSocketUrl } from '../api'
 
 const TARGET_SAMPLE_RATE = 16000
-const SILENCE_THRESHOLD = 0.015
-const PAUSE_MS = 1600
 const WORKLET_PROCESSOR_NAME = 'pcm-stream-processor'
 
 const workletProcessorSource = `
@@ -75,9 +73,7 @@ export function useSpeechToText({ token, onTranscript, onError }) {
   const sourceNodeRef = useRef(null)
   const processorNodeRef = useRef(null)
   const workletUrlRef = useRef(null)
-  const lastSpeechAtRef = useRef(0)
   const stopRequestedRef = useRef(false)
-  const lastTranscriptRef = useRef('')
 
   const cleanupAudio = useCallback(async () => {
     processorNodeRef.current?.disconnect()
@@ -117,8 +113,6 @@ export function useSpeechToText({ token, onTranscript, onError }) {
     setIsConnecting(true)
     setIsModelReady(false)
     stopRequestedRef.current = false
-    lastSpeechAtRef.current = Date.now()
-    lastTranscriptRef.current = ''
     setTranscript('')
     setDebugState({
       stage: 'connecting',
@@ -147,29 +141,30 @@ export function useSpeechToText({ token, onTranscript, onError }) {
             lastEvent: 'backend ready',
           }))
         }
-        if (payload.type === 'partial' || payload.type === 'final') {
-          let nextText = payload.text || ''
-          if (!nextText.trim() && lastTranscriptRef.current.trim()) {
-            nextText = lastTranscriptRef.current
-          }
-          if (nextText.trim()) {
-            lastTranscriptRef.current = nextText
-          }
-          setTranscript(nextText)
-          if (nextText.trim()) {
-            onTranscript?.(nextText, payload.type === 'final')
+        if (payload.type === 'interim' || payload.type === 'commit' || payload.type === 'final') {
+          const fullText = String(payload.fullText || payload.text || '').trim()
+          setTranscript(fullText)
+          if (fullText) {
+            onTranscript?.(fullText, payload.type === 'final')
           }
           setDebugState((prev) => ({
             ...prev,
-            stage: payload.type === 'final' ? 'final-received' : 'partial-received',
-            partialCount: prev.partialCount + (payload.type === 'partial' ? 1 : 0),
+            stage: payload.type,
+            partialCount: prev.partialCount + (payload.type === 'interim' ? 1 : 0),
             finalCount: prev.finalCount + (payload.type === 'final' ? 1 : 0),
             lastEvent: `${payload.type} received`,
-            lastTranscriptLength: nextText.length,
+            lastTranscriptLength: fullText.length,
           }))
           if (payload.type === 'final') {
             ws.close()
           }
+        }
+        if (payload.type === 'state') {
+          setDebugState((prev) => ({
+            ...prev,
+            stage: payload.status || 'state',
+            lastEvent: `state: ${payload.status || 'unknown'}`,
+          }))
         }
         if (payload.type === 'error') {
           setDebugState((prev) => ({
@@ -250,22 +245,6 @@ export function useSpeechToText({ token, onTranscript, onError }) {
               audioContext.sampleRate,
               TARGET_SAMPLE_RATE,
             )
-            const rms = Math.sqrt(
-              downsampled.reduce((sum, value) => sum + value * value, 0) /
-                Math.max(downsampled.length, 1),
-            )
-
-            if (rms > SILENCE_THRESHOLD) {
-              lastSpeechAtRef.current = Date.now()
-            } else if (Date.now() - lastSpeechAtRef.current >= PAUSE_MS) {
-              setDebugState((prev) => ({
-                ...prev,
-                stage: 'pause-detected',
-                lastEvent: 'pause detected, stopping',
-              }))
-              stopRecording()
-              return
-            }
 
             const payload = floatTo16BitPCM(downsampled)
             wsRef.current.send(payload)
@@ -273,7 +252,7 @@ export function useSpeechToText({ token, onTranscript, onError }) {
               ...prev,
               stage: 'streaming',
               bytesSent: prev.bytesSent + payload.byteLength,
-              lastEvent: `audio chunk sent (rms=${rms.toFixed(4)})`,
+              lastEvent: 'audio chunk sent',
             }))
           }
 

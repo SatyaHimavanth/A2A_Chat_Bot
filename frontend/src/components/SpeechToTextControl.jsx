@@ -1,4 +1,10 @@
+import { useEffect, useState } from 'react'
+
 import { useSpeechToText } from '../lib/speech/useSpeechToText'
+import {
+  isBrowserSpeechAvailable,
+  useBrowserSpeechToText,
+} from '../lib/speech/useBrowserSpeechToText'
 const SHOW_STT_DEBUG = String(import.meta.env.VITE_STT_DEBUG || 'false').toLowerCase() === 'true'
 
 export default function SpeechToTextControl({
@@ -7,22 +13,91 @@ export default function SpeechToTextControl({
   onTranscriptChange,
   onError,
 }) {
+  const googleAvailable = isBrowserSpeechAvailable()
+  const [mode, setMode] = useState('server')
+
   const {
-    isRecording,
-    isConnecting,
-    isModelReady,
-    transcript,
-    debugState,
-    startRecording,
-    stopRecording,
+    isRecording: serverRecording,
+    isConnecting: serverConnecting,
+    isModelReady: serverReady,
+    transcript: serverTranscript,
+    debugState: serverDebugState,
+    startRecording: startServerRecording,
+    stopRecording: stopServerRecording,
   } = useSpeechToText({
     token,
     onTranscript: (text) => onTranscriptChange?.(text),
     onError,
   })
 
+  const {
+    isRecording: browserRecording,
+    isConnecting: browserConnecting,
+    isReady: browserReady,
+    startRecording: startBrowserRecording,
+    stopRecording: stopBrowserRecording,
+  } = useBrowserSpeechToText({
+    onTranscript: (text) => onTranscriptChange?.(text),
+    onError,
+  })
+
+  const usingGoogle = mode === 'google' && googleAvailable
+  const isRecording = usingGoogle ? browserRecording : serverRecording
+  const isConnecting = usingGoogle ? browserConnecting : serverConnecting
+  const isReady = usingGoogle ? browserReady : serverReady
+  const transcript = usingGoogle ? '' : serverTranscript
+  const debugState = usingGoogle
+    ? {
+        stage: browserRecording ? 'recording' : browserConnecting ? 'connecting' : 'idle',
+        bytesSent: 0,
+        partialCount: 0,
+        finalCount: 0,
+        lastEvent: 'google browser stt',
+        lastTranscriptLength: 0,
+      }
+    : serverDebugState
+
+  function toggleRecording() {
+    if (isRecording) {
+      if (usingGoogle) {
+        stopBrowserRecording()
+      } else {
+        stopServerRecording()
+      }
+      return
+    }
+    if (usingGoogle) {
+      startBrowserRecording()
+    } else {
+      startServerRecording()
+    }
+  }
+
+  useEffect(() => {
+    if (mode === 'google' && !googleAvailable) {
+      setMode('server')
+    }
+  }, [googleAvailable, mode])
+
+  useEffect(() => {
+    // Prevent stale active recording when switching STT providers.
+    stopServerRecording()
+    stopBrowserRecording()
+  }, [mode, stopBrowserRecording, stopServerRecording])
+
   return (
     <div className="flex items-center gap-2 shrink-0">
+      <select
+        className="hidden md:block rounded-xl border border-cardBorder bg-card px-2 py-1.5 text-xs text-foreground"
+        value={mode}
+        onChange={(e) => setMode(e.target.value)}
+        disabled={disabled || isRecording || isConnecting}
+      >
+        <option value="server">Server STT</option>
+        <option value="google" disabled={!googleAvailable}>
+          {googleAvailable ? 'Google STT (Browser)' : 'Google STT Unavailable'}
+        </option>
+      </select>
       <button
         type="button"
         className={`shrink-0 w-12 h-12 flex items-center justify-center rounded-2xl transition-all shadow-md active:scale-95 ${
@@ -30,7 +105,7 @@ export default function SpeechToTextControl({
             ? 'bg-red-500 text-white hover:bg-red-600'
             : 'bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-300 dark:hover:bg-slate-700'
         }`}
-        onClick={isRecording ? stopRecording : startRecording}
+        onClick={toggleRecording}
         disabled={disabled || isConnecting}
         aria-label={isRecording ? 'Stop recording' : 'Start recording'}
         title={isRecording ? 'Stop recording' : 'Start recording'}
@@ -47,7 +122,7 @@ export default function SpeechToTextControl({
       </button>
       {isRecording && (
         <div className="hidden lg:block min-w-[130px] text-[11px] text-slate-500 dark:text-slate-400">
-          {`Listening${isModelReady ? '' : '... loading model'}`}
+          {`Listening${isReady ? '' : '... loading model'}`}
         </div>
       )}
       {SHOW_STT_DEBUG && (

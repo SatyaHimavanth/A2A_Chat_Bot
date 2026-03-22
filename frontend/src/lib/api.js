@@ -1,5 +1,9 @@
 const API_BASE = import.meta.env.VITE_API_BASE || ''
 
+function emitAuthUpdated() {
+  window.dispatchEvent(new Event('auth-updated'))
+}
+
 async function parseBody(res) {
   const text = await res.text()
   if (!text) return {}
@@ -32,6 +36,7 @@ async function refreshAccessToken() {
   if (payload.refresh_expires_at) {
     localStorage.setItem('refresh_expires_at', payload.refresh_expires_at)
   }
+  emitAuthUpdated()
   return nextAccess
 }
 

@@ -8,8 +8,25 @@ import LoginPage from './pages/LoginPage'
 import PlaygroundPage from './pages/PlaygroundPage'
 import './App.css'
 
-function PrivateRoute({ token, children }) {
-  if (!token) {
+function isFutureIso(value) {
+  if (!value) return false
+  const timestamp = Date.parse(value)
+  if (Number.isNaN(timestamp)) return false
+  return timestamp > Date.now()
+}
+
+function hasUsableAuth(auth) {
+  if (auth.accessToken && isFutureIso(auth.accessExpiresAt)) {
+    return true
+  }
+  if (auth.refreshToken && isFutureIso(auth.refreshExpiresAt)) {
+    return true
+  }
+  return false
+}
+
+function PrivateRoute({ auth, children }) {
+  if (!hasUsableAuth(auth)) {
     return <Navigate to="/login" replace />
   }
   return children
@@ -30,6 +47,35 @@ export default function App({ auth, setAuth }) {
       document.documentElement.classList.remove('dark')
     }
   }, [theme])
+
+  useEffect(() => {
+    function syncAuthFromStorage() {
+      setAuth({
+        accessToken: localStorage.getItem('access_token') || '',
+        refreshToken: localStorage.getItem('refresh_token') || '',
+        username: localStorage.getItem('username') || '',
+        accessExpiresAt: localStorage.getItem('access_expires_at') || '',
+        refreshExpiresAt: localStorage.getItem('refresh_expires_at') || '',
+      })
+    }
+
+    window.addEventListener('storage', syncAuthFromStorage)
+    window.addEventListener('auth-updated', syncAuthFromStorage)
+    return () => {
+      window.removeEventListener('storage', syncAuthFromStorage)
+      window.removeEventListener('auth-updated', syncAuthFromStorage)
+    }
+  }, [setAuth])
+
+  useEffect(() => {
+    if (!auth.accessToken && !auth.refreshToken) {
+      return
+    }
+    if (hasUsableAuth(auth)) {
+      return
+    }
+    handleLogout()
+  }, [auth.accessToken, auth.refreshToken, auth.accessExpiresAt, auth.refreshExpiresAt])
 
   const toggleTheme = () => setTheme((t) => (t === 'light' ? 'dark' : 'light'))
 
@@ -72,7 +118,7 @@ export default function App({ auth, setAuth }) {
       <Route
         path="/agents"
         element={
-          <PrivateRoute token={auth.accessToken}>
+          <PrivateRoute auth={auth}>
             <AgentsPage
               token={auth.accessToken}
               username={auth.username}
@@ -86,7 +132,7 @@ export default function App({ auth, setAuth }) {
       <Route
         path="/agents/:agentId"
         element={
-          <PrivateRoute token={auth.accessToken}>
+          <PrivateRoute auth={auth}>
             <AgentDetailPage
               token={auth.accessToken}
               username={auth.username}
@@ -100,7 +146,7 @@ export default function App({ auth, setAuth }) {
       <Route
         path="/agents/:agentId/chat"
         element={
-          <PrivateRoute token={auth.accessToken}>
+          <PrivateRoute auth={auth}>
             <ChatPage
               token={auth.accessToken}
               username={auth.username}
@@ -114,7 +160,7 @@ export default function App({ auth, setAuth }) {
       <Route
         path="/playground"
         element={
-          <PrivateRoute token={auth.accessToken}>
+          <PrivateRoute auth={auth}>
             <PlaygroundPage
               token={auth.accessToken}
               username={auth.username}
@@ -128,7 +174,7 @@ export default function App({ auth, setAuth }) {
       <Route
         path="*"
         element={
-          <Navigate to={auth.accessToken ? '/agents' : '/login'} replace />
+          <Navigate to={hasUsableAuth(auth) ? '/agents' : '/login'} replace />
         }
       />
     </Routes>

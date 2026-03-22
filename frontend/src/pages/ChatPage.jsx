@@ -493,7 +493,7 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
       <section className="flex-1 flex flex-col lg:flex-row gap-6 px-4 md:px-6 lg:px-8 pb-6 min-h-0 max-w-[1400px] w-full mx-auto">
 
         {/* Sidebar Sessions */}
-        <aside className="glass-panel w-full lg:w-[320px] shrink-0 flex flex-col max-h-[30vh] lg:max-h-full overflow-hidden">
+        <aside className="glass-panel w-full lg:w-[320px] shrink-0 flex flex-col min-h-0 h-[30vh] lg:h-full overflow-hidden">
           <div className="p-4 border-b border-cardBorder flex justify-between items-center shrink-0">
             <h2 className="text-lg font-bold text-slate-800 dark:text-slate-100 m-0">
               {showArchived ? 'Archived Chats' : 'Conversations'}
@@ -522,13 +522,13 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
             />
           </div>
 
-          <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-2">
+          <div className="flex-1 h-0 min-h-0 overflow-y-auto overscroll-contain p-3 pr-2 flex flex-col gap-2 custom-scroll">
             {!showArchived ? (
               <>
                 {activeSessions.map((session) => (
                   <div
                     key={session.id}
-                    className={`flex flex-col rounded-xl overflow-hidden transition-all border ${selectedSession?.id === session.id ? 'border-primary bg-primary/5 shadow-md shadow-primary/10' : 'border-cardBorder bg-card/50 hover:bg-slate-50 dark:hover:bg-slate-800/80 hover:border-slate-300 dark:hover:border-slate-600'}`}
+                    className={`shrink-0 flex flex-col rounded-xl overflow-hidden transition-all border ${selectedSession?.id === session.id ? 'border-primary bg-primary/5 shadow-md shadow-primary/10' : 'border-cardBorder bg-card/50 hover:bg-slate-50 dark:hover:bg-slate-800/80 hover:border-slate-300 dark:hover:border-slate-600'}`}
                   >
                     <button className="text-left w-full p-3 bg-transparent outline-none focus:outline-none" onClick={() => selectSession(session)}>
                       <strong className="text-sm font-semibold text-slate-800 dark:text-slate-200 block truncate">{session.title || 'Untitled'}</strong>
@@ -554,7 +554,7 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
                 {archivedSessions.map((session) => (
                   <div
                     key={session.id}
-                    className={`flex flex-col rounded-xl overflow-hidden transition-all border opacity-75 hover:opacity-100 ${selectedSession?.id === session.id ? 'border-primary bg-primary/5 shadow-md shadow-primary/10' : 'border-cardBorder bg-card/50 hover:bg-slate-50 dark:hover:bg-slate-800 hover:border-slate-300 dark:hover:border-slate-600'}`}
+                    className={`shrink-0 flex flex-col rounded-xl overflow-hidden transition-all border opacity-75 hover:opacity-100 ${selectedSession?.id === session.id ? 'border-primary bg-primary/5 shadow-md shadow-primary/10' : 'border-cardBorder bg-card/50 hover:bg-slate-50 dark:hover:bg-slate-800 hover:border-slate-300 dark:hover:border-slate-600'}`}
                   >
                     <button className="text-left w-full p-3 bg-transparent outline-none" onClick={() => selectSession(session)}>
                       <strong className="text-sm font-semibold text-slate-800 dark:text-slate-200 block truncate line-through decoration-slate-400/50">{session.title || 'Untitled'}</strong>
