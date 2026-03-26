@@ -2,7 +2,16 @@ from a2a.client.middleware import ClientCallContext
 from a2a.utils.message import get_message_text
 
 from models import AgentConnection, ChatSession
-from schemas import AgentDetail, AgentModeCard, AgentSummary, SessionSummary
+from schemas import (
+    AgentAnalytics,
+    AgentBenchmark,
+    AgentDetail,
+    AgentModeCard,
+    AgentRegistryMetadata,
+    AgentSummary,
+    SessionSummary,
+)
+from services.agent_registry import average_rating
 
 
 def serialize_agent(agent: AgentConnection) -> AgentSummary:
@@ -19,6 +28,21 @@ def serialize_agent(agent: AgentConnection) -> AgentSummary:
             or payload.get('supports_authenticated_extended_card')
         ),
         skills=payload.get('skills', []),
+        capability_tags=agent.capability_tags or [],
+        registry_metadata=AgentRegistryMetadata(**(agent.registry_metadata or {})),
+        benchmarks=AgentBenchmark(
+            latency_ms=agent.benchmark_latency_ms,
+            cost=agent.benchmark_cost,
+            success_rate=agent.benchmark_success_rate,
+        ),
+        analytics=AgentAnalytics(
+            usage_count=agent.usage_count or 0,
+            success_count=agent.success_count or 0,
+            failure_count=agent.failure_count or 0,
+            rating_average=average_rating(agent),
+            rating_count=agent.rating_count or 0,
+            last_used_at=agent.last_used_at,
+        ),
         created_at=agent.created_at,
     )
 
@@ -41,6 +65,21 @@ def serialize_agent_detail(
         base_url=agent.base_url,
         card_name=agent.card_name,
         card_description=agent.card_description,
+        capability_tags=agent.capability_tags or [],
+        registry_metadata=AgentRegistryMetadata(**(agent.registry_metadata or {})),
+        benchmarks=AgentBenchmark(
+            latency_ms=agent.benchmark_latency_ms,
+            cost=agent.benchmark_cost,
+            success_rate=agent.benchmark_success_rate,
+        ),
+        analytics=AgentAnalytics(
+            usage_count=agent.usage_count or 0,
+            success_count=agent.success_count or 0,
+            failure_count=agent.failure_count or 0,
+            rating_average=average_rating(agent),
+            rating_count=agent.rating_count or 0,
+            last_used_at=agent.last_used_at,
+        ),
         modes=mode_cards,
         created_at=agent.created_at,
         updated_at=agent.updated_at,

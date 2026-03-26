@@ -8,6 +8,27 @@ import SpeechToTextControl from '../components/SpeechToTextControl'
 import { apiRequest, createSseUrl } from '../lib/api'
 
 const CHAT_STREAM_TIMEOUT_MS = Number(import.meta.env.VITE_CHAT_STREAM_TIMEOUT_MS || 240000)
+const MAX_ATTACHMENTS = 5
+const MAX_ATTACHMENT_SIZE_BYTES = 5 * 1024 * 1024
+
+function buildUserPreviewMessage(message, attachments) {
+  const base = message.trim()
+  const ready = attachments.filter((item) => item.status === 'ready')
+  if (!ready.length) {
+    return base
+  }
+  const attachmentList = ready
+    .map((item) => {
+      const normalized = (item.text || '').replace(/\s+/g, ' ').trim()
+      const summary = normalized ? `: ${normalized.slice(0, 120)}${normalized.length > 120 ? '...' : ''}` : ''
+      return `- ${item.filename}${summary}`
+    })
+    .join('\n')
+  if (!base) {
+    return `Attached files:\n${attachmentList}`
+  }
+  return `${base}\n\nAttached files:\n${attachmentList}`
+}
 
 export default function ChatPage({ token, username, onLogout, theme, toggleTheme }) {
   const { agentId } = useParams()
@@ -26,9 +47,11 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
   const [renameInputValue, setRenameInputValue] = useState('')
   const [sessionToDelete, setSessionToDelete] = useState(null)
   const [showArchived, setShowArchived] = useState(false)
+  const [attachments, setAttachments] = useState([])
 
   const messagesEndRef = useRef(null)
   const hasSearchEffectInitialized = useRef(false)
+  const fileInputRef = useRef(null)
 
   const activeSessions = sessions.filter((s) => (s.chat_status ?? 1) === 1)
   const archivedSessions = sessions.filter((s) => (s.chat_status ?? 1) === -1)
@@ -52,6 +75,89 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
   function reportError(message) {
     setError(message)
     showFlash(message, 'error')
+  }
+
+  function removeAttachment(attachmentId) {
+    setAttachments((prev) => prev.filter((item) => item.id !== attachmentId))
+  }
+
+  function openFilePicker() {
+    fileInputRef.current?.click()
+  }
+
+  async function handleFileSelection(e) {
+    const selectedFiles = Array.from(e.target.files || [])
+    e.target.value = ''
+    if (!selectedFiles.length) return
+
+    if (attachments.length + selectedFiles.length > MAX_ATTACHMENTS) {
+      reportError(`You can attach at most ${MAX_ATTACHMENTS} files.`)
+      return
+    }
+
+    const oversized = selectedFiles.find((file) => file.size > MAX_ATTACHMENT_SIZE_BYTES)
+    if (oversized) {
+      reportError(`${oversized.name} exceeds the 5 MB limit.`)
+      return
+    }
+
+    const placeholders = selectedFiles.map((file, index) => ({
+      id: `${Date.now()}-${index}-${file.name}`,
+      filename: file.name,
+      size: file.size,
+      status: 'extracting',
+      text: '',
+      error: '',
+    }))
+    setAttachments((prev) => [...prev, ...placeholders])
+
+    try {
+      const formData = new FormData()
+      selectedFiles.forEach((file) => formData.append('files', file))
+      const res = await fetch(createSseUrl('/api/attachments/extract'), {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        body: formData,
+      })
+      if (res.status === 401) {
+        onLogout()
+        throw new Error('Session expired. Please login again.')
+      }
+      const payload = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(payload.detail || 'Failed to extract file content.')
+      }
+      const results = Array.isArray(payload.files) ? payload.files : []
+      setAttachments((prev) =>
+        prev.map((item) => {
+          const idx = placeholders.findIndex((placeholder) => placeholder.id === item.id)
+          if (idx === -1) {
+            return item
+          }
+          const result = results[idx]
+          if (!result) {
+            return { ...item, status: 'error', error: 'No extraction result returned.' }
+          }
+          return {
+            ...item,
+            status: result.status,
+            text: result.text || '',
+            error: result.error || '',
+          }
+        }),
+      )
+    } catch (err) {
+      setAttachments((prev) =>
+        prev.map((item) =>
+          placeholders.some((placeholder) => placeholder.id === item.id)
+            ? { ...item, status: 'error', error: err.message || 'Extraction failed.' }
+            : item,
+        ),
+      )
+      reportError(err.message)
+    }
   }
 
   useEffect(() => {
@@ -317,7 +423,12 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
 
   async function sendMessage(e) {
     e.preventDefault()
-    if (!chatInput.trim() || isLoading) {
+    const readyAttachments = attachments.filter((item) => item.status === 'ready' && item.text.trim())
+    if ((!chatInput.trim() && !readyAttachments.length) || isLoading) {
+      return
+    }
+    if (attachments.some((item) => item.status === 'extracting')) {
+      reportError('Wait for file extraction to finish before sending.')
       return
     }
 
@@ -330,7 +441,14 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
       return
     }
     const messageText = chatInput.trim()
+    const previewMessage = buildUserPreviewMessage(messageText, readyAttachments)
+    const outgoingAttachments = readyAttachments.map((item) => ({
+      filename: item.filename,
+      text: item.text,
+    }))
+    const outgoingAttachmentState = attachments
     setChatInput('')
+    setAttachments([])
 
     let session = selectedSession
     try {
@@ -346,7 +464,7 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
     const userMessage = {
       id: Date.now(),
       role: 'user',
-      content: messageText,
+      content: previewMessage,
       created_at: new Date().toISOString(),
     }
     const assistantPlaceholder = {
@@ -368,7 +486,11 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ message: messageText }),
+        body: JSON.stringify({
+          message: messageText,
+          attachments: outgoingAttachments,
+          display_message: previewMessage,
+        }),
         signal: controller.signal,
       })
       if (res.status === 401) {
@@ -464,6 +586,7 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
         reportError('No response received from agent. Please try again.')
       }
     } catch (err) {
+      setAttachments(outgoingAttachmentState)
       if (err?.name === 'AbortError') {
         reportError('Agent response timed out. Please try again.')
       } else {
@@ -631,7 +754,58 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
 
           <div className="p-4 bg-slate-50/50 dark:bg-slate-900/50 border-t border-cardBorder shrink-0 rounded-b-2xl">
             <form className="relative flex items-end gap-2 max-w-4xl mx-auto" onSubmit={sendMessage}>
+              <input
+                ref={fileInputRef}
+                type="file"
+                className="hidden"
+                multiple
+                onChange={handleFileSelection}
+              />
+              <button
+                type="button"
+                className={`shrink-0 w-12 h-12 flex items-center justify-center rounded-2xl transition-all shadow-md active:scale-95 ${
+                  isLoading || agentStatus !== 'connected' || selectedSession?.chat_status === -1 || attachments.length >= MAX_ATTACHMENTS
+                    ? 'bg-slate-200 dark:bg-slate-800 text-slate-400 cursor-not-allowed'
+                    : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700'
+                }`}
+                onClick={openFilePicker}
+                disabled={isLoading || agentStatus !== 'connected' || selectedSession?.chat_status === -1 || attachments.length >= MAX_ATTACHMENTS}
+                aria-label="Attach files"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 5v14M5 12h14" />
+                </svg>
+              </button>
               <div className="relative flex-1 bg-card rounded-2xl shadow-inner border border-cardBorder overflow-hidden group focus-within:border-primary focus-within:ring-1 focus-within:ring-primary transition-all">
+                {!!attachments.length && (
+                  <div className="px-3 pt-3 pb-1 flex flex-wrap gap-2 border-b border-cardBorder bg-slate-50/80 dark:bg-slate-900/40">
+                    {attachments.map((attachment) => (
+                      <div
+                        key={attachment.id}
+                        className={`flex items-center gap-2 rounded-xl px-3 py-1.5 text-xs border ${
+                          attachment.status === 'error'
+                            ? 'border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-900/20 dark:text-red-300'
+                            : attachment.status === 'extracting'
+                              ? 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-900/20 dark:text-amber-300'
+                              : 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-900/20 dark:text-emerald-300'
+                        }`}
+                      >
+                        <span className="max-w-[180px] truncate">{attachment.filename}</span>
+                        <span className="uppercase tracking-wider opacity-70">
+                          {attachment.status === 'extracting' ? 'extracting' : attachment.status}
+                        </span>
+                        <button
+                          type="button"
+                          className="text-current opacity-70 hover:opacity-100"
+                          onClick={() => removeAttachment(attachment.id)}
+                          aria-label={`Remove ${attachment.filename}`}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 <textarea
                   className={`w-full bg-transparent border-0 resize-none max-h-[160px] min-h-[52px] p-3.5 outline-none text-[0.95rem] text-slate-800 dark:text-slate-200 ${selectedSession?.chat_status === -1 ? 'cursor-not-allowed opacity-60' : ''}`}
                   value={chatInput}
@@ -659,8 +833,8 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
               />
               <button
                 type="submit"
-                className={`shrink-0 w-12 h-12 flex items-center justify-center rounded-2xl transition-all shadow-md active:scale-95 ${!chatInput.trim() || isLoading || agentStatus !== 'connected' || selectedSession?.chat_status === -1 ? 'bg-slate-200 dark:bg-slate-800 text-slate-400 cursor-not-allowed' : 'bg-primary text-white hover:bg-primary-hover hover:shadow-primary/30'}`}
-                disabled={isLoading || agentStatus !== 'connected' || selectedSession?.chat_status === -1}
+                className={`shrink-0 w-12 h-12 flex items-center justify-center rounded-2xl transition-all shadow-md active:scale-95 ${(!chatInput.trim() && !attachments.some((item) => item.status === 'ready' && item.text.trim())) || isLoading || agentStatus !== 'connected' || selectedSession?.chat_status === -1 ? 'bg-slate-200 dark:bg-slate-800 text-slate-400 cursor-not-allowed' : 'bg-primary text-white hover:bg-primary-hover hover:shadow-primary/30'}`}
+                disabled={((!chatInput.trim() && !attachments.some((item) => item.status === 'ready' && item.text.trim())) || isLoading || agentStatus !== 'connected' || selectedSession?.chat_status === -1)}
                 aria-label="Send Message"
               >
                 {isLoading ? (

@@ -9,6 +9,7 @@ from starlette.websockets import WebSocketState
 from core.auth_utils import verify_auth_token
 from core.config import (
     STT_DEFAULT_PAUSE_MS,
+    STT_ENABLED,
     STT_ENDPOINT_SILENCE_MS,
     STT_MIN_VOICED_RATIO,
     STT_MODEL_ID,
@@ -102,6 +103,10 @@ async def _authenticate_ws(websocket: WebSocket) -> User | None:
 
 @router.websocket('/api/stt/ws')
 async def speech_to_text_ws(websocket: WebSocket):
+    if not STT_ENABLED:
+        await _safe_close(websocket, code=4403, reason='Server-side STT is disabled.')
+        return
+
     user = await _authenticate_ws(websocket)
     if user is None:
         return

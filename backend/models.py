@@ -1,7 +1,7 @@
 from datetime import datetime
 from enum import Enum
 
-from sqlalchemy import DateTime, Enum as SQLEnum, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, Enum as SQLEnum, Float, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
@@ -46,6 +46,17 @@ class AgentConnection(Base):
     card_name: Mapped[str] = mapped_column(String(255), nullable=False)
     card_description: Mapped[str] = mapped_column(Text, nullable=False)
     card_payload: Mapped[dict] = mapped_column(JSONType, nullable=False)
+    registry_metadata: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
+    capability_tags: Mapped[list[str]] = mapped_column(JSONType, nullable=False, default=list)
+    benchmark_latency_ms: Mapped[int | None] = mapped_column(nullable=True)
+    benchmark_cost: Mapped[float | None] = mapped_column(Float, nullable=True)
+    benchmark_success_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    usage_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    success_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    failure_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    rating_total: Mapped[int] = mapped_column(nullable=False, default=0)
+    rating_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=datetime.utcnow, nullable=False
     )

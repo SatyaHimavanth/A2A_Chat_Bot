@@ -1,8 +1,10 @@
 import json
+import asyncio
 from datetime import datetime, timezone
+from time import perf_counter
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -11,6 +13,8 @@ from database import SessionLocal, get_db
 from deps import require_user
 from models import AgentConnection, ChatMessage, ChatSession, User
 from schemas import (
+    AttachmentExtractResponse,
+    AttachmentExtractResult,
     ChatRequest,
     MessageSummary,
     SessionCreateRequest,
@@ -19,10 +23,88 @@ from schemas import (
 )
 from services.agent_service import status_manager
 from services.agent_transport import send_agent_message
+from services.file_extract import (
+    MAX_ATTACHMENT_COUNT,
+    MAX_ATTACHMENT_SIZE_BYTES,
+    extract_text_from_upload,
+)
+from services.agent_registry import record_agent_usage
 from services.serialization import serialize_session
 from services.session_intelligence import refine_title, update_session_intelligence
 
 router = APIRouter(prefix='/api', tags=['sessions'])
+
+
+def _compose_message(message: str, attachments) -> str:
+    base_message = message.strip()
+    ready_attachments = [item for item in attachments if item.text.strip()]
+    if not ready_attachments:
+        return base_message
+    attachment_sections = '\n\n'.join(
+        f"[Attachment: {item.filename}]\n{item.text.strip()}"
+        for item in ready_attachments
+    )
+    return (
+        f"{base_message}\n\nAttached file context:\n{attachment_sections}"
+        if base_message
+        else f"Attached file context:\n{attachment_sections}"
+    )
+
+
+def _display_message(message: str, attachments, explicit_display: str | None) -> str:
+    if explicit_display and explicit_display.strip():
+        return explicit_display.strip()
+    base_message = message.strip()
+    ready_attachments = [item for item in attachments if item.text.strip()]
+    if not ready_attachments:
+        return base_message
+    file_lines = '\n'.join(f'- {item.filename}' for item in ready_attachments)
+    if base_message:
+        return f'{base_message}\n\nAttached files:\n{file_lines}'
+    return f'Attached files:\n{file_lines}'
+
+
+@router.post('/attachments/extract', response_model=AttachmentExtractResponse)
+async def extract_attachments(
+    files: list[UploadFile] = File(...),
+    user: User = Depends(require_user),
+):
+    del user
+    if not files:
+        raise HTTPException(status_code=400, detail='No files provided.')
+    if len(files) > MAX_ATTACHMENT_COUNT:
+        raise HTTPException(
+            status_code=400,
+            detail=f'At most {MAX_ATTACHMENT_COUNT} files can be attached.',
+        )
+
+    async def _process_file(upload: UploadFile) -> AttachmentExtractResult:
+        raw_bytes = await upload.read()
+        if len(raw_bytes) > MAX_ATTACHMENT_SIZE_BYTES:
+            return AttachmentExtractResult(
+                filename=upload.filename or 'unnamed',
+                size=len(raw_bytes),
+                status='error',
+                error='File exceeds 5 MB limit.',
+            )
+        try:
+            text = await extract_text_from_upload(upload.filename or 'unnamed', raw_bytes)
+            return AttachmentExtractResult(
+                filename=upload.filename or 'unnamed',
+                size=len(raw_bytes),
+                text=text.strip(),
+                status='ready',
+            )
+        except Exception as exc:
+            return AttachmentExtractResult(
+                filename=upload.filename or 'unnamed',
+                size=len(raw_bytes),
+                status='error',
+                error=str(exc),
+            )
+
+    results = await asyncio.gather(*[_process_file(file) for file in files])
+    return AttachmentExtractResponse(files=results)
 
 
 @router.post('/agents/{agent_id}/sessions', response_model=SessionSummary, status_code=201)
@@ -102,15 +184,24 @@ async def stream_chat(
             detail='Agent cannot be connected right now.',
         )
 
+    composed_message = _compose_message(payload.message, payload.attachments)
+    visible_message = _display_message(
+        payload.message,
+        payload.attachments,
+        payload.display_message,
+    )
+    if not composed_message.strip():
+        raise HTTPException(status_code=400, detail='Message cannot be empty.')
+
     user_message = ChatMessage(
         session_id=session.id,
         role='user',
-        content=payload.message,
+        content=visible_message,
     )
     db.add(user_message)
     session.updated_at = datetime.now(timezone.utc)
     if session.title == 'New chat':
-        session.title = refine_title(payload.message)
+        session.title = refine_title(payload.message or visible_message or composed_message)
     if session.chat_status == -1:
         session.chat_status = 1
     db.commit()
@@ -119,7 +210,9 @@ async def stream_chat(
         assistant_text = ''
         try:
             yield f"data: {json.dumps({'type': 'start'})}\n\n"
-            assistant_text = await send_agent_message(agent, payload.message, session.context_id)
+            started = perf_counter()
+            assistant_text = await send_agent_message(agent, composed_message, session.context_id)
+            latency_ms = int((perf_counter() - started) * 1000)
             if assistant_text:
                 yield (
                     f"data: {json.dumps({'type': 'assistant_snapshot', 'text': assistant_text})}\n\n"
@@ -137,6 +230,13 @@ async def stream_chat(
                                 content=assistant_text,
                             )
                         )
+                    db_agent = db2.get(AgentConnection, agent.id)
+                    if db_agent:
+                        record_agent_usage(
+                            db_agent,
+                            latency_ms=latency_ms,
+                            success=bool(assistant_text.strip()),
+                        )
                     db_session.updated_at = datetime.now(timezone.utc)
                     update_session_intelligence(db2, db_session)
                     db2.commit()
@@ -150,6 +250,7 @@ async def stream_chat(
                 db_agent = db3.get(AgentConnection, agent.id)
                 if db_agent:
                     db_agent.status = 'disconnected'
+                    record_agent_usage(db_agent, success=False)
                     db3.commit()
             finally:
                 db3.close()

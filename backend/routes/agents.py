@@ -6,8 +6,13 @@ from sqlalchemy.orm import Session
 from database import get_db
 from deps import require_user
 from models import AgentConnection, AgentMode, ChatSession, User
-from schemas import AgentConnectRequest, AgentDetail, AgentSummary, SessionSummary
+from schemas import AgentConnectRequest, AgentDetail, AgentRateRequest, AgentSummary, SessionSummary
 from services.agent_service import resolve_agent_card, status_manager, sync_agents_status_fast
+from services.agent_registry import (
+    derive_capability_tags,
+    derive_registry_metadata,
+    record_agent_rating,
+)
 from services.serialization import serialize_agent, serialize_agent_detail, serialize_session
 
 router = APIRouter(prefix='/api', tags=['agents'])
@@ -83,6 +88,8 @@ async def connect_agent(
         card_name=card.name,
         card_description=card.description,
         card_payload=card_payload,
+        registry_metadata=derive_registry_metadata(card_payload, base_url),
+        capability_tags=derive_capability_tags(card_payload),
     )
     db.add(row)
     try:
@@ -96,6 +103,22 @@ async def connect_agent(
     db.refresh(row)
     status_manager.set_cached_status(row.id, row.status)
     return serialize_agent(row)
+
+
+@router.post('/agents/{agent_id}/rate', response_model=AgentSummary)
+def rate_agent(
+    agent_id: int,
+    payload: AgentRateRequest,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    agent = db.get(AgentConnection, agent_id)
+    if not agent or agent.user_id != user.id:
+        raise HTTPException(status_code=404, detail='Agent not found.')
+    record_agent_rating(agent, payload.rating)
+    db.commit()
+    db.refresh(agent)
+    return serialize_agent(agent)
 
 
 @router.post('/agents/{agent_id}/refresh-status', response_model=AgentSummary)

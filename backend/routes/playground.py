@@ -14,6 +14,7 @@ from schemas import (
     PlaygroundCompareRequest,
     PlaygroundCompareResponse,
 )
+from services.agent_registry import record_agent_usage
 from services.agent_transport import send_agent_message
 
 router = APIRouter(prefix='/api/playground', tags=['playground'])
@@ -85,4 +86,14 @@ async def compare_agents(
         for aid in agent_ids
     ]
     results = await asyncio.gather(*tasks)
+    for result in results:
+        agent = by_id.get(result.agent_id)
+        if not agent:
+            continue
+        record_agent_usage(
+            agent,
+            latency_ms=result.latency_ms,
+            success=result.status == 'ok',
+        )
+    db.commit()
     return PlaygroundCompareResponse(results=results)

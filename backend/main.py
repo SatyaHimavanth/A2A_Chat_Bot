@@ -6,7 +6,7 @@ from sqlalchemy import select, text
 
 from database import Base, engine, get_db
 from models import User
-from core.config import STT_PRELOAD_ON_STARTUP
+from core.config import STT_ENABLED
 from routes.agents import router as agents_router
 from routes.auth import router as auth_router
 from routes.playground import router as playground_router
@@ -22,6 +22,17 @@ def _run_startup() -> None:
         # Lightweight migrations for existing DBs.
         statements = [
             "ALTER TABLE agent_connections ADD COLUMN status VARCHAR(30) NOT NULL DEFAULT 'connected'",
+            "ALTER TABLE agent_connections ADD COLUMN registry_metadata JSON NOT NULL DEFAULT '{}'",
+            "ALTER TABLE agent_connections ADD COLUMN capability_tags JSON NOT NULL DEFAULT '[]'",
+            "ALTER TABLE agent_connections ADD COLUMN benchmark_latency_ms INTEGER",
+            "ALTER TABLE agent_connections ADD COLUMN benchmark_cost FLOAT",
+            "ALTER TABLE agent_connections ADD COLUMN benchmark_success_rate FLOAT",
+            "ALTER TABLE agent_connections ADD COLUMN usage_count INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE agent_connections ADD COLUMN success_count INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE agent_connections ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE agent_connections ADD COLUMN rating_total INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE agent_connections ADD COLUMN rating_count INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE agent_connections ADD COLUMN last_used_at TIMESTAMP",
             "ALTER TABLE chat_sessions ADD COLUMN chat_status INTEGER NOT NULL DEFAULT 1",
             "ALTER TABLE chat_sessions ADD COLUMN summary TEXT",
             "ALTER TABLE chat_sessions ADD COLUMN tags JSON NOT NULL DEFAULT '[]'",
@@ -44,7 +55,7 @@ def _run_startup() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     _run_startup()
-    if STT_PRELOAD_ON_STARTUP:
+    if STT_ENABLED:
         await stt_service.ensure_loaded()
     yield
 
