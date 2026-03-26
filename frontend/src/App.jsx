@@ -6,6 +6,7 @@ import AgentsPage from './pages/AgentsPage'
 import ChatPage from './pages/ChatPage'
 import LoginPage from './pages/LoginPage'
 import PlaygroundPage from './pages/PlaygroundPage'
+import PromptsPage from './pages/PromptsPage'
 import './App.css'
 
 function isFutureIso(value) {
@@ -162,6 +163,20 @@ export default function App({ auth, setAuth }) {
         element={
           <PrivateRoute auth={auth}>
             <PlaygroundPage
+              token={auth.accessToken}
+              username={auth.username}
+              onLogout={handleLogout}
+              theme={theme}
+              toggleTheme={toggleTheme}
+            />
+          </PrivateRoute>
+        }
+      />
+      <Route
+        path="/prompts"
+        element={
+          <PrivateRoute auth={auth}>
+            <PromptsPage
               token={auth.accessToken}
               username={auth.username}
               onLogout={handleLogout}

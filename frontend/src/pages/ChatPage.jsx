@@ -11,6 +11,11 @@ const CHAT_STREAM_TIMEOUT_MS = Number(import.meta.env.VITE_CHAT_STREAM_TIMEOUT_M
 const MAX_ATTACHMENTS = 5
 const MAX_ATTACHMENT_SIZE_BYTES = 5 * 1024 * 1024
 
+function fileExtension(filename) {
+  const idx = filename.lastIndexOf('.')
+  return idx >= 0 ? filename.slice(idx).toLowerCase() : ''
+}
+
 function buildUserPreviewMessage(message, attachments) {
   const base = message.trim()
   const ready = attachments.filter((item) => item.status === 'ready')
@@ -48,6 +53,11 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
   const [sessionToDelete, setSessionToDelete] = useState(null)
   const [showArchived, setShowArchived] = useState(false)
   const [attachments, setAttachments] = useState([])
+  const [promptTemplates, setPromptTemplates] = useState([])
+  const [showPromptLibrary, setShowPromptLibrary] = useState(false)
+  const [promptDraftTitle, setPromptDraftTitle] = useState('')
+  const [promptDraftScope, setPromptDraftScope] = useState('agent')
+  const [showExportMenu, setShowExportMenu] = useState(false)
 
   const messagesEndRef = useRef(null)
   const hasSearchEffectInitialized = useRef(false)
@@ -55,6 +65,8 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
 
   const activeSessions = sessions.filter((s) => (s.chat_status ?? 1) === 1)
   const archivedSessions = sessions.filter((s) => (s.chat_status ?? 1) === -1)
+  const supportedAttachmentSuffixes = agentDetail?.supported_attachment_suffixes || []
+  const supportedAttachmentAccept = supportedAttachmentSuffixes.join(',')
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -75,6 +87,18 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
   function reportError(message) {
     setError(message)
     showFlash(message, 'error')
+  }
+
+  async function loadPromptTemplates() {
+    try {
+      const data = await apiRequest(`/api/prompts?agent_id=${encodeURIComponent(agentId)}`, {
+        token,
+        onUnauthorized: onLogout,
+      })
+      setPromptTemplates(data)
+    } catch (err) {
+      reportError(err.message)
+    }
   }
 
   function removeAttachment(attachmentId) {
@@ -99,6 +123,18 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
     if (oversized) {
       reportError(`${oversized.name} exceeds the 5 MB limit.`)
       return
+    }
+
+    if (supportedAttachmentSuffixes.length) {
+      const unsupported = selectedFiles.find(
+        (file) => !supportedAttachmentSuffixes.includes(fileExtension(file.name)),
+      )
+      if (unsupported) {
+        reportError(
+          `${unsupported.name} is not supported. Allowed types: ${supportedAttachmentSuffixes.join(', ')}`,
+        )
+        return
+      }
     }
 
     const placeholders = selectedFiles.map((file, index) => ({
@@ -220,6 +256,7 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
     setMessages([])
     loadAgentDetail()
     loadSessions()
+    loadPromptTemplates()
   }, [agentId])
 
   useEffect(() => {
@@ -419,6 +456,92 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
 
   function closeDeleteModal() {
     setSessionToDelete(null)
+  }
+
+  async function createPromptTemplate() {
+    const title = promptDraftTitle.trim()
+    const content = chatInput.trim()
+    if (!title) {
+      reportError('Prompt title cannot be empty.')
+      return
+    }
+    if (!content) {
+      reportError('Write a prompt before saving it.')
+      return
+    }
+    try {
+      const created = await apiRequest('/api/prompts', {
+        method: 'POST',
+        token,
+        body: {
+          title,
+          content,
+          agent_id: promptDraftScope === 'agent' ? Number(agentId) : null,
+        },
+        onUnauthorized: onLogout,
+      })
+      setPromptTemplates((prev) => [created, ...prev])
+      setPromptDraftTitle('')
+      setShowPromptLibrary(false)
+      showFlash('Prompt saved.', 'success')
+    } catch (err) {
+      reportError(err.message)
+    }
+  }
+
+  async function deletePromptTemplate(promptId) {
+    try {
+      await apiRequest(`/api/prompts/${promptId}`, {
+        method: 'DELETE',
+        token,
+        onUnauthorized: onLogout,
+      })
+      setPromptTemplates((prev) => prev.filter((item) => item.id !== promptId))
+    } catch (err) {
+      reportError(err.message)
+    }
+  }
+
+  function applyPromptTemplate(prompt) {
+    setChatInput(prompt.content || '')
+    setShowPromptLibrary(false)
+  }
+
+  async function exportSession(format) {
+    if (!selectedSession?.id) {
+      reportError('Select a session before exporting.')
+      return
+    }
+    try {
+      const res = await fetch(createSseUrl(`/api/sessions/${selectedSession.id}/export?format=${encodeURIComponent(format)}`), {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      })
+      if (res.status === 401) {
+        onLogout()
+        throw new Error('Session expired. Please login again.')
+      }
+      if (!res.ok) {
+        const payload = await res.json().catch(() => ({}))
+        throw new Error(payload.detail || 'Failed to export session.')
+      }
+      const blob = await res.blob()
+      const disposition = res.headers.get('Content-Disposition') || ''
+      const matched = disposition.match(/filename="([^"]+)"/)
+      const filename = matched?.[1] || `chat-session.${format === 'json' ? 'json' : 'md'}`
+      const downloadUrl = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = downloadUrl
+      link.download = filename
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      URL.revokeObjectURL(downloadUrl)
+      setShowExportMenu(false)
+    } catch (err) {
+      reportError(err.message)
+    }
   }
 
   async function sendMessage(e) {
@@ -703,6 +826,36 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
             </div>
 
             <div className="flex items-center gap-3">
+              <button
+                type="button"
+                className="btn-ghost py-1 px-3 text-xs"
+                onClick={() => setShowPromptLibrary(true)}
+              >
+                Prompts
+              </button>
+              <div className="relative">
+                <button
+                  type="button"
+                  className="btn-ghost py-1 px-3 text-xs"
+                  onClick={() => setShowExportMenu((prev) => !prev)}
+                  disabled={!selectedSession}
+                >
+                  Export
+                </button>
+                {showExportMenu && selectedSession && (
+                  <div className="absolute right-0 top-10 z-30 min-w-[180px] rounded-xl border border-cardBorder bg-card/95 backdrop-blur-md shadow-2xl p-2 animate-fade-in">
+                    <button type="button" className="btn-ghost w-full justify-start text-sm" onClick={() => exportSession('markdown')}>
+                      Export Markdown
+                    </button>
+                    <button type="button" className="btn-ghost w-full justify-start text-sm" onClick={() => exportSession('txt')}>
+                      Export Text
+                    </button>
+                    <button type="button" className="btn-ghost w-full justify-start text-sm" onClick={() => exportSession('json')}>
+                      Export JSON
+                    </button>
+                  </div>
+                )}
+              </div>
               <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-1 flex items-center gap-1.5 rounded-full ${agentStatus === 'connected' ? 'bg-teal-100 text-teal-800 dark:bg-teal-900/40 dark:text-teal-300' : 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300'}`}>
                 <span className={`w-1.5 h-1.5 rounded-full ${agentStatus === 'connected' ? 'bg-teal-500 animate-pulse' : 'bg-red-500'}`}></span>
                 {agentStatus || 'connected'}
@@ -759,6 +912,7 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
                 type="file"
                 className="hidden"
                 multiple
+                accept={supportedAttachmentAccept}
                 onChange={handleFileSelection}
               />
               <button
@@ -887,6 +1041,81 @@ export default function ChatPage({ token, username, onLogout, theme, toggleTheme
             <div className="flex justify-end gap-3">
               <button type="button" onClick={closeDeleteModal} className="btn-ghost">Cancel</button>
               <button type="button" onClick={submitDeleteSession} className="btn-danger">Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showPromptLibrary && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in" onClick={() => setShowPromptLibrary(false)}>
+          <div className="glass-panel w-full max-w-3xl p-6 relative max-h-[85vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start justify-between gap-4 mb-4">
+              <div>
+                <h3 className="text-xl font-bold text-slate-800 dark:text-slate-100 mb-1">Prompt Library</h3>
+                <p className="text-sm text-slate-500 dark:text-slate-400 m-0">Save reusable prompts for this agent or your whole workspace.</p>
+              </div>
+              <button type="button" className="btn-ghost py-2 px-3 text-sm" onClick={() => exportSession('json')} disabled={!selectedSession}>
+                Quick JSON Export
+              </button>
+            </div>
+            <div className="grid md:grid-cols-[1.1fr,0.9fr] gap-6 min-h-0 flex-1">
+              <div className="min-h-0 overflow-y-auto custom-scroll pr-2 space-y-3">
+                {promptTemplates.length ? (
+                  promptTemplates.map((prompt) => (
+                    <div key={prompt.id} className="rounded-2xl border border-cardBorder bg-card/50 p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <h4 className="text-sm font-semibold text-slate-800 dark:text-slate-200 m-0">{prompt.title}</h4>
+                          <p className="text-[11px] uppercase tracking-wider text-slate-500 mt-1 mb-0">
+                            {prompt.agent_id ? 'Agent-specific' : 'Workspace-wide'}
+                          </p>
+                        </div>
+                        <button type="button" className="text-xs text-red-600 dark:text-red-400" onClick={() => deletePromptTemplate(prompt.id)}>
+                          Delete
+                        </button>
+                      </div>
+                      <p className="text-sm text-slate-600 dark:text-slate-400 mt-3 mb-4 whitespace-pre-wrap line-clamp-4">{prompt.content}</p>
+                      <button type="button" className="btn-primary py-2 px-3 text-xs" onClick={() => applyPromptTemplate(prompt)}>
+                        Use Prompt
+                      </button>
+                    </div>
+                  ))
+                ) : (
+                  <div className="rounded-2xl border border-dashed border-cardBorder p-6 text-sm text-slate-500 dark:text-slate-400">
+                    No saved prompts yet for this workspace or agent.
+                  </div>
+                )}
+              </div>
+              <div className="rounded-2xl border border-cardBorder bg-card/50 p-4 flex flex-col gap-4">
+                <div>
+                  <h4 className="text-sm font-semibold text-slate-800 dark:text-slate-200 m-0">Save Current Input</h4>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 mb-0">We’ll save whatever is in the composer right now.</p>
+                </div>
+                <input
+                  type="text"
+                  className="input-base"
+                  placeholder="Prompt title"
+                  value={promptDraftTitle}
+                  onChange={(e) => setPromptDraftTitle(e.target.value)}
+                />
+                <select
+                  className="input-base"
+                  value={promptDraftScope}
+                  onChange={(e) => setPromptDraftScope(e.target.value)}
+                >
+                  <option value="agent">Save for this agent</option>
+                  <option value="global">Save for all agents</option>
+                </select>
+                <div className="rounded-xl bg-slate-50 dark:bg-slate-900/40 border border-cardBorder p-3 text-sm text-slate-600 dark:text-slate-400 whitespace-pre-wrap min-h-[180px]">
+                  {chatInput.trim() || 'No current input to save.'}
+                </div>
+                <div className="flex justify-end gap-3 mt-auto">
+                  <button type="button" className="btn-ghost" onClick={() => setShowPromptLibrary(false)}>Close</button>
+                  <button type="button" className="btn-primary" onClick={createPromptTemplate} disabled={!chatInput.trim() || !promptDraftTitle.trim()}>
+                    Save Prompt
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         </div>

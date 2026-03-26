@@ -29,6 +29,7 @@ class User(Base):
 
     agents: Mapped[list['AgentConnection']] = relationship(back_populates='user')
     sessions: Mapped[list['ChatSession']] = relationship(back_populates='user')
+    prompt_templates: Mapped[list['PromptTemplate']] = relationship(back_populates='user')
 
 
 class AgentConnection(Base):
@@ -69,6 +70,7 @@ class AgentConnection(Base):
 
     user: Mapped[User] = relationship(back_populates='agents')
     sessions: Mapped[list['ChatSession']] = relationship(back_populates='agent')
+    prompt_templates: Mapped[list['PromptTemplate']] = relationship(back_populates='agent')
 
 
 class ChatSession(Base):
@@ -123,3 +125,28 @@ class ChatMessage(Base):
     )
 
     session: Mapped[ChatSession] = relationship(back_populates='messages')
+
+
+class PromptTemplate(Base):
+    __tablename__ = 'prompt_templates'
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey('users.id'), nullable=False)
+    agent_connection_id: Mapped[int | None] = mapped_column(
+        ForeignKey('agent_connections.id'),
+        nullable=True,
+    )
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    user: Mapped[User] = relationship(back_populates='prompt_templates')
+    agent: Mapped[AgentConnection | None] = relationship(back_populates='prompt_templates')

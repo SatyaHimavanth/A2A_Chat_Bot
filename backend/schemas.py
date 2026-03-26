@@ -92,6 +92,7 @@ class AgentDetail(BaseModel):
     base_url: str
     card_name: str
     card_description: str
+    supported_attachment_suffixes: list[str] = Field(default_factory=list)
     capability_tags: list[str] = Field(default_factory=list)
     registry_metadata: AgentRegistryMetadata = Field(default_factory=AgentRegistryMetadata)
     benchmarks: AgentBenchmark = Field(default_factory=AgentBenchmark)
@@ -152,6 +153,26 @@ class AttachmentExtractResponse(BaseModel):
 
 class SessionRenameRequest(BaseModel):
     title: str
+
+
+class PromptTemplateCreateRequest(BaseModel):
+    title: str
+    content: str
+    agent_id: int | None = None
+
+
+class PromptTemplateUpdateRequest(BaseModel):
+    title: str
+    content: str
+
+
+class PromptTemplateSummary(BaseModel):
+    id: int
+    title: str
+    content: str
+    agent_id: int | None = None
+    created_at: datetime
+    updated_at: datetime
 
 
 class PlaygroundCompareRequest(BaseModel):

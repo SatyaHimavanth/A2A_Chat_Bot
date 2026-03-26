@@ -99,6 +99,7 @@ export default function AgentsPage({ token, username, onLogout, theme, toggleThe
           onLogout={onLogout}
           username={username}
           showAgentsNav={false}
+          showPromptsNav={true}
           theme={theme}
           toggleTheme={toggleTheme}
         />

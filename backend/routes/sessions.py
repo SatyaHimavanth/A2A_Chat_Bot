@@ -5,7 +5,7 @@ from time import perf_counter
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -161,6 +161,105 @@ def get_messages(
         )
         for m in msgs
     ]
+
+
+@router.get('/sessions/{session_id}/export')
+def export_session(
+    session_id: int,
+    format: str = 'markdown',
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    session = db.get(ChatSession, session_id)
+    if not session or session.user_id != user.id or session.chat_status == 0:
+        raise HTTPException(status_code=404, detail='Session not found.')
+
+    agent = db.get(AgentConnection, session.agent_connection_id)
+    messages = db.scalars(
+        select(ChatMessage)
+        .where(ChatMessage.session_id == session_id)
+        .order_by(ChatMessage.created_at.asc())
+    ).all()
+
+    export_format = format.strip().lower()
+    if export_format == 'json':
+        payload = {
+            'session': {
+                'id': session.id,
+                'context_id': session.context_id,
+                'title': session.title,
+                'summary': session.summary,
+                'tags': session.tags or [],
+                'created_at': session.created_at.isoformat(),
+                'updated_at': session.updated_at.isoformat(),
+            },
+            'agent': {
+                'id': agent.id if agent else None,
+                'name': agent.card_name if agent else None,
+                'base_url': agent.base_url if agent else None,
+                'mode': agent.mode.value if agent and hasattr(agent.mode, 'value') else None,
+            },
+            'messages': [
+                {
+                    'role': msg.role,
+                    'content': msg.content,
+                    'created_at': msg.created_at.isoformat(),
+                }
+                for msg in messages
+            ],
+        }
+        content = json.dumps(payload, indent=2, ensure_ascii=False)
+        media_type = 'application/json'
+        extension = 'json'
+    elif export_format == 'markdown':
+        header_lines = [
+            f'# {session.title}',
+            '',
+            f'- Session ID: `{session.context_id}`',
+            f'- Agent: {agent.card_name if agent else "Unknown agent"}',
+        ]
+        if session.summary:
+            header_lines.extend(['', f'> {session.summary}'])
+        if session.tags:
+            header_lines.extend(['', f'Tags: {" ".join(f"#{tag}" for tag in session.tags)}'])
+        body_lines = []
+        for msg in messages:
+            speaker = 'User' if msg.role == 'user' else 'Assistant'
+            body_lines.extend(
+                [
+                    '',
+                    f'## {speaker}',
+                    '',
+                    msg.content,
+                ]
+            )
+        content = '\n'.join(header_lines + body_lines).strip() + '\n'
+        media_type = 'text/markdown; charset=utf-8'
+        extension = 'md'
+    elif export_format == 'txt':
+        parts = [
+            session.title,
+            f'Session ID: {session.context_id}',
+            f'Agent: {agent.card_name if agent else "Unknown agent"}',
+        ]
+        if session.summary:
+            parts.extend(['', f'Summary: {session.summary}'])
+        if session.tags:
+            parts.extend(['', f'Tags: {", ".join(session.tags)}'])
+        for msg in messages:
+            speaker = 'User' if msg.role == 'user' else 'Assistant'
+            parts.extend(['', f'[{speaker}]', msg.content])
+        content = '\n'.join(parts).strip() + '\n'
+        media_type = 'text/plain; charset=utf-8'
+        extension = 'txt'
+    else:
+        raise HTTPException(status_code=400, detail='Unsupported export format.')
+
+    safe_title = ''.join(ch if ch.isalnum() or ch in {'-', '_'} else '_' for ch in session.title).strip('_') or 'chat-session'
+    headers = {
+        'Content-Disposition': f'attachment; filename="{safe_title}.{extension}"',
+    }
+    return Response(content=content.encode('utf-8'), media_type=media_type, headers=headers)
 
 
 @router.post('/sessions/{session_id}/stream')

@@ -9,6 +9,7 @@ export default function AppHeader({
   onLogout,
   username,
   showAgentsNav = true,
+  showPromptsNav = false,
   theme,
   toggleTheme,
 }) {
@@ -29,6 +30,11 @@ export default function AppHeader({
         {showAgentsNav && (
           <button className="btn-ghost" onClick={() => navigate('/agents')}>
             Agents
+          </button>
+        )}
+        {showPromptsNav && (
+          <button className="btn-ghost" onClick={() => navigate('/prompts')}>
+            Prompts
           </button>
         )}
 

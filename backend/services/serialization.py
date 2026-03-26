@@ -12,6 +12,7 @@ from schemas import (
     SessionSummary,
 )
 from services.agent_registry import average_rating
+from services.file_extract import SUPPORTED_ATTACHMENT_SUFFIXES
 
 
 def serialize_agent(agent: AgentConnection) -> AgentSummary:
@@ -65,6 +66,7 @@ def serialize_agent_detail(
         base_url=agent.base_url,
         card_name=agent.card_name,
         card_description=agent.card_description,
+        supported_attachment_suffixes=SUPPORTED_ATTACHMENT_SUFFIXES,
         capability_tags=agent.capability_tags or [],
         registry_metadata=AgentRegistryMetadata(**(agent.registry_metadata or {})),
         benchmarks=AgentBenchmark(

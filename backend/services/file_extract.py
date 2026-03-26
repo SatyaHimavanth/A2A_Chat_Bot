@@ -27,6 +27,7 @@ TEXT_FILE_SUFFIXES = {
     '.yml',
     '.log',
 }
+SUPPORTED_ATTACHMENT_SUFFIXES = sorted({'.pdf', '.docx', *TEXT_FILE_SUFFIXES})
 
 
 def _extract_pdf_text(raw_bytes: bytes) -> str:
